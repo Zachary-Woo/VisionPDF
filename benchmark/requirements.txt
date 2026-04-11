@@ -1,0 +1,48 @@
+# ===========================================================================
+# PDF Extraction Benchmark - Dependencies
+# ===========================================================================
+# Install with:  pip install -r requirements.txt
+# Note: torch should be installed first with the correct CUDA version for
+#       your system.  See https://pytorch.org/get-started/locally/
+# ===========================================================================
+
+# --- Core / shared ---
+pypdfium2>=4.30
+Pillow>=10.0
+numpy>=1.24
+opencv-python>=4.8
+
+# --- Tier 1: native text-layer extraction ---
+PyMuPDF>=1.24
+pymupdf4llm>=0.0.10
+
+# --- Tier 2: hybrid (YOLO + Docling) ---
+ultralytics>=8.3          # YOLO (v8/v11/v12/v26 models)
+transformers>=4.40        # LayoutReader (LayoutLMv3)
+docling>=2.0              # Docling RT-DETR pipeline
+
+# --- Tier 2: hybrid (SAM-based detection + reading order) ---
+einops>=0.7
+scikit-learn>=1.4         # agglomerative clustering for SAM feature baseline
+torchvision>=0.17         # RoIAlign, batched_nms for FCOS detection head
+pycocotools>=2.0          # COCO-format annotation parsing (DocLayNet)
+safetensors>=0.4          # loading DeepSeek OCR 2 weights
+
+# --- Tier 3: full OCR / VLM ---
+easyocr>=1.7
+# PaddleOCR requires separate installation (uses its own package index):
+#   CPU:  pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+#   GPU:  pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
+#   Then: pip install "paddleocr>=3.2"
+# Windows: import torch BEFORE paddleocr to avoid DLL conflicts.
+# RTX 50-series: needs special PaddlePaddle wheels (see PaddleOCR install docs).
+
+# --- Evaluation ---
+editdistance>=0.8
+apted>=1.0.3              # tree edit distance (TEDS computation)
+lxml>=5.0
+tabulate>=0.9             # pretty-print results
+PyYAML>=6.0               # OmniDocBench eval bridge config
+
+# --- General ---
+tqdm>=4.65
