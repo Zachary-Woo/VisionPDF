@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
 # OmniDocBench dataset paths
-# Download from: https://huggingface.co/datasets/opendatalab/OmniDocBench
+# Download from: https://huggingface.co/datasets/samiuc/omnidocbench
 # Expected structure:
 #   OmniDocBench/
 #     images/       <- page images (jpg)
@@ -111,9 +111,7 @@ NON_TEXT_LABELS = {"Picture", "Page-footer", "Page-header", "Table"}
 # Dataset download helpers
 # ---------------------------------------------------------------------------
 
-# The v1.5 update (2025-09-25) removed pdfs/ and ori_pdfs/ from the HF repo
-# and only re-uploaded images/.  This older revision still has all three.
-_OMNIDOCBENCH_PDF_REVISION = "f5f559bddf50e36f7f9899d842d0006f13ce8afc"
+_OMNIDOCBENCH_HF_REPO = "samiuc/omnidocbench"
 
 
 def ensure_omnidocbench(pdf_dir: Optional[Path] = None) -> Path:
@@ -121,14 +119,8 @@ def ensure_omnidocbench(pdf_dir: Optional[Path] = None) -> Path:
     Download the OmniDocBench dataset from HuggingFace if not already
     present, including single-page PDFs with real text layers.
 
-    The current ``main`` branch of opendatalab/OmniDocBench only has
-    images and the JSON annotation file (the pdfs/ and ori_pdfs/ folders
-    were deleted during the v1.5 restructure).  This function pulls:
-
-      1. **pdfs/ and images/** from an older revision that still has
-         the original single-page PDFs with embedded text layers.
-      2. **OmniDocBench.json** from ``main`` so you get the latest
-         ground-truth annotations.
+    Uses the samiuc/omnidocbench mirror which keeps pdfs/, ori_pdfs/,
+    images/, and OmniDocBench.json together on main.
 
     Returns the path to the pdfs/ directory.
     """
@@ -139,46 +131,27 @@ def ensure_omnidocbench(pdf_dir: Optional[Path] = None) -> Path:
 
     from huggingface_hub import snapshot_download
 
-    # Step 1: PDFs and images from the older revision that still has them.
-    if not pdf_dir.exists() or not any(pdf_dir.glob("*.pdf")):
-        print("Downloading OmniDocBench PDFs + images (older revision)...")
-        print(f"  Target: {OMNIDOCBENCH_DIR}")
-        try:
-            snapshot_download(
-                "opendatalab/OmniDocBench",
-                repo_type="dataset",
-                revision=_OMNIDOCBENCH_PDF_REVISION,
-                local_dir=str(OMNIDOCBENCH_DIR),
-                allow_patterns=["pdfs/**", "images/**"],
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to download OmniDocBench PDFs: {e}\n"
-                "Please download manually:\n"
-                "  hf download opendatalab/OmniDocBench"
-                f" --repo-type dataset --revision {_OMNIDOCBENCH_PDF_REVISION}"
-                " --local-dir OmniDocBench\n"
-                f"and place under {OMNIDOCBENCH_DIR}"
-            ) from e
-
-    # Step 2: Latest ground-truth JSON from main.
-    if not OMNIDOCBENCH_JSON.exists():
-        print("Downloading latest OmniDocBench.json from main...")
-        try:
-            snapshot_download(
-                "opendatalab/OmniDocBench",
-                repo_type="dataset",
-                local_dir=str(OMNIDOCBENCH_DIR),
-                allow_patterns=["OmniDocBench.json"],
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to download OmniDocBench.json: {e}\n"
-                "Please download manually:\n"
-                "  hf download opendatalab/OmniDocBench"
-                " OmniDocBench.json --repo-type dataset"
-                " --local-dir OmniDocBench"
-            ) from e
+    print(f"Downloading OmniDocBench from {_OMNIDOCBENCH_HF_REPO}...")
+    print(f"  Target: {OMNIDOCBENCH_DIR}")
+    try:
+        snapshot_download(
+            _OMNIDOCBENCH_HF_REPO,
+            repo_type="dataset",
+            local_dir=str(OMNIDOCBENCH_DIR),
+            allow_patterns=[
+                "OmniDocBench.json",
+                "pdfs/**",
+                "images/**",
+            ],
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download OmniDocBench: {e}\n"
+            "Please download manually:\n"
+            f"  hf download {_OMNIDOCBENCH_HF_REPO}"
+            " --repo-type dataset --local-dir OmniDocBench\n"
+            f"and place under {OMNIDOCBENCH_DIR}"
+        ) from e
 
     count = len(list(pdf_dir.glob("*.pdf"))) if pdf_dir.exists() else 0
     print(f"OmniDocBench ready: {count} PDFs in {pdf_dir}")
