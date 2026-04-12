@@ -64,7 +64,6 @@ SAM_ORDER_CHECKPOINT = MODELS_DIR / "sam_reading_order.pt"
 # Dataset paths for training
 # ---------------------------------------------------------------------------
 DOCLAYNET_DIR = PROJECT_ROOT / "DocLayNet"
-READINGBANK_DIR = PROJECT_ROOT / "ReadingBank"
 
 # ---------------------------------------------------------------------------
 # DocLayNet label map (shared by YOLO-based scripts)

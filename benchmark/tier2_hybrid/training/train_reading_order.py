@@ -1,31 +1,21 @@
 """
 Training script for the visual reading order head.
 
-Uses ReadingBank (Microsoft) which provides word-level reading order
-annotations for ~500K document pages.  Words are grouped into
-paragraph-level blocks by spatial proximity, and the block-level
-reading order is derived from the word sequence.
+Uses DocLayNet images paired with reading order pseudo-labels generated
+by LayoutReader (see generate_order_labels.py).  This gives the order
+head real document images to learn visual features from, unlike the
+original ReadingBank approach which lacked images.
 
 The SAM encoder and detection head are frozen.  Only the reading
 order transformer head is trained.
 
 Prerequisites:
-  - ReadingBank dataset downloaded.  Get it from:
-    https://aka.ms/readingbank
-    Expected structure:
-      ReadingBank/
-        train/
-          *.jsonl   (each line: {"src": image_path, "tgt": word_list})
-        val/
-          *.jsonl
-
-  - A trained SAM detection head checkpoint (from train_sam_detector.py)
+  - Generated order labels (run generate_order_labels.py first)
+  - DocLayNet dataset (auto-downloads on first use)
 
 Usage:
-    python -m benchmark.tier2_hybrid.training.train_reading_order \
-        --readingbank-dir ReadingBank \
-        --sam-model-path deepseek-ai/DeepSeek-OCR-2 \
-        --epochs 8
+    python -m benchmark.tier2_hybrid.training.train_reading_order
+    python -m benchmark.tier2_hybrid.training.train_reading_order --epochs 12 --batch-size 4
 """
 
 import argparse
@@ -33,19 +23,20 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
-from benchmark.config import DEEPSEEK_OCR2_MODEL, PROJECT_ROOT
+from benchmark.config import DEEPSEEK_OCR2_MODEL, DOCLAYNET_DIR, PROJECT_ROOT
 from benchmark.tier2_hybrid.sam.encoder import load_sam_encoder
 from benchmark.tier2_hybrid.sam.detector import MultiScaleSAMEncoder
 from benchmark.tier2_hybrid.sam.order_head import ReadingOrderHead
+from benchmark.tier2_hybrid.training.generate_order_labels import ORDER_LABELS_DIR
 
 MODELS_DIR = PROJECT_ROOT / "models"
 
@@ -54,161 +45,94 @@ _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
-# ReadingBank dataset -- groups words into blocks for region-level order
+# DocLayNet + order labels dataset
 # ---------------------------------------------------------------------------
 
-def _group_words_to_blocks(
-    words: List[Dict],
-    y_tolerance: float = 10.0,
-    x_gap_tolerance: float = 50.0,
-) -> List[Dict]:
+class DocLayNetOrderDataset(Dataset):
     """
-    Group word-level annotations into paragraph blocks by spatial proximity.
+    Dataset that pairs DocLayNet page images with LayoutReader-generated
+    reading order pseudo-labels for training the visual reading order head.
 
-    Each word dict has: {"text": str, "bbox": [x1, y1, x2, y2]}
-    Returns blocks with: {"bbox": [x1, y1, x2, y2], "order": int}
-    where order is the position of the block's first word in the
-    reading sequence.
-    """
-    if not words:
-        return []
-
-    lines: List[List[Dict]] = []
-    current_line = [words[0]]
-
-    for w in words[1:]:
-        prev = current_line[-1]
-        prev_cy = (prev["bbox"][1] + prev["bbox"][3]) / 2
-        cur_cy = (w["bbox"][1] + w["bbox"][3]) / 2
-        if abs(cur_cy - prev_cy) < y_tolerance:
-            current_line.append(w)
-        else:
-            lines.append(current_line)
-            current_line = [w]
-    lines.append(current_line)
-
-    blocks: List[List[List[Dict]]] = [[lines[0]]]
-    for line in lines[1:]:
-        prev_block_last_line = blocks[-1][-1]
-        prev_bottom = max(w["bbox"][3] for w in prev_block_last_line)
-        cur_top = min(w["bbox"][1] for w in line)
-        gap = cur_top - prev_bottom
-
-        line_height = max(
-            max(w["bbox"][3] - w["bbox"][1] for w in line),
-            max(w["bbox"][3] - w["bbox"][1] for w in prev_block_last_line),
-        )
-        if gap < line_height * 1.5:
-            blocks[-1].append(line)
-        else:
-            blocks.append([line])
-
-    result = []
-    for block_idx, block_lines in enumerate(blocks):
-        all_words_in_block = [w for line in block_lines for w in line]
-        x1 = min(w["bbox"][0] for w in all_words_in_block)
-        y1 = min(w["bbox"][1] for w in all_words_in_block)
-        x2 = max(w["bbox"][2] for w in all_words_in_block)
-        y2 = max(w["bbox"][3] for w in all_words_in_block)
-        result.append({"bbox": [x1, y1, x2, y2], "order": block_idx})
-
-    return result
-
-
-class ReadingBankDataset(Dataset):
-    """
-    Dataset that loads ReadingBank JSONL files and produces
-    (image_tensor, block_boxes, block_order) tuples for training
-    the reading order head.
+    Loads real document images so the SAM encoder can extract meaningful
+    visual features, unlike position-only approaches.
     """
 
     def __init__(
         self,
-        data_dir: Path,
-        split: str = "train",
+        labels_path: Path,
+        images_dir: Path,
         target_size: int = 1024,
-        max_blocks: int = 64,
+        max_regions: int = 64,
     ):
+        """
+        Parameters
+        ----------
+        labels_path : Path
+            JSON file from generate_order_labels.py.
+        images_dir : Path
+            DocLayNet PNG/ directory containing page images.
+        target_size : int
+            Image canvas size in pixels.
+        max_regions : int
+            Maximum number of regions per sample.
+        """
+        self.images_dir = images_dir
         self.target_size = target_size
-        self.max_blocks = max_blocks
-        self.samples: List[Dict] = []
+        self.max_regions = max_regions
 
-        split_dir = data_dir / split
-        if not split_dir.exists():
+        if not labels_path.exists():
             raise FileNotFoundError(
-                f"ReadingBank split not found: {split_dir}\n"
-                f"Download from https://aka.ms/readingbank"
+                f"Order labels not found: {labels_path}\n"
+                "Run generate_order_labels.py first:\n"
+                "  python -m benchmark.tier2_hybrid.training.generate_order_labels"
             )
 
-        for jsonl_file in sorted(split_dir.glob("*.jsonl")):
-            with open(jsonl_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        self.samples.append(json.loads(line))
+        with open(labels_path, "r", encoding="utf-8") as f:
+            self.samples = json.load(f)
 
-        if not self.samples:
-            raise RuntimeError(f"No samples found in {split_dir}")
-
-        print(f"ReadingBank {split}: {len(self.samples)} samples")
+        print(f"DocLayNetOrder ({labels_path.stem}): {len(self.samples)} samples")
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.samples[idx]
+        file_name = sample["file_name"]
+        boxes_xyxy = sample["boxes"]
+        order = sample["order"]
 
-        words = sample.get("tgt", [])
-        if isinstance(words, str):
-            try:
-                words = json.loads(words)
-            except json.JSONDecodeError:
-                words = []
-
-        parsed_words = []
-        for w in words:
-            if isinstance(w, dict) and "bbox" in w:
-                parsed_words.append(w)
-            elif isinstance(w, (list, tuple)) and len(w) >= 5:
-                parsed_words.append({
-                    "text": str(w[0]),
-                    "bbox": [float(w[1]), float(w[2]), float(w[3]), float(w[4])],
-                })
-
-        blocks = _group_words_to_blocks(parsed_words)
-
-        img_path = sample.get("src", "")
+        img_path = self.images_dir / file_name
         try:
-            from PIL import Image
             image = Image.open(img_path).convert("RGB")
         except Exception:
-            image = Image.new("RGB", (1024, 1024), (255, 255, 255))
+            image = Image.new("RGB", (self.target_size, self.target_size), (255, 255, 255))
 
         w, h = image.size
         scale = self.target_size / max(w, h)
         new_w, new_h = int(w * scale), int(h * scale)
         image = image.resize((new_w, new_h), Image.BILINEAR)
-        from PIL import Image as PILImage
-        canvas = PILImage.new("RGB", (self.target_size, self.target_size), (0, 0, 0))
+
+        canvas = Image.new("RGB", (self.target_size, self.target_size), (0, 0, 0))
         canvas.paste(image, (0, 0))
 
         arr = np.array(canvas, dtype=np.float32) / 255.0
         arr = (arr - _MEAN) / _STD
         img_tensor = torch.from_numpy(arr).permute(2, 0, 1)
 
-        block_boxes = []
-        block_orders = []
-        for block in blocks[:self.max_blocks]:
-            bx = [c * scale for c in block["bbox"]]
-            block_boxes.append(bx)
-            block_orders.append(block["order"])
+        n = min(len(boxes_xyxy), self.max_regions)
+        scaled_boxes = []
+        scaled_order = []
+        for i in range(n):
+            bx = [c * scale for c in boxes_xyxy[i]]
+            scaled_boxes.append(bx)
+            scaled_order.append(order[i])
 
-        if not block_boxes:
-            block_boxes = [[0, 0, 1, 1]]
-            block_orders = [0]
+        if not scaled_boxes:
+            scaled_boxes = [[0, 0, 1, 1]]
+            scaled_order = [0]
 
-        boxes_t = torch.tensor(block_boxes, dtype=torch.float32)
-        orders_t = torch.tensor(block_orders, dtype=torch.long)
+        boxes_t = torch.tensor(scaled_boxes, dtype=torch.float32)
+        orders_t = torch.tensor(scaled_order, dtype=torch.long)
 
         return {
             "image": img_tensor,
@@ -218,7 +142,7 @@ class ReadingBankDataset(Dataset):
 
 
 def collate_order_fn(batch):
-    """Custom collate for variable-length block lists."""
+    """Custom collate for variable-length region lists."""
     images = torch.stack([b["image"] for b in batch])
     boxes = [b["boxes"] for b in batch]
     orders = [b["orders"] for b in batch]
@@ -371,9 +295,12 @@ def validate_order(
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--readingbank-dir", type=Path,
-        default=PROJECT_ROOT / "ReadingBank",
-        help="Path to ReadingBank dataset root",
+        "--labels-dir", type=Path, default=ORDER_LABELS_DIR,
+        help="Directory with order label JSONs from generate_order_labels.py",
+    )
+    parser.add_argument(
+        "--doclaynet-dir", type=Path, default=DOCLAYNET_DIR,
+        help="Path to DocLayNet dataset root (for images)",
     )
     parser.add_argument(
         "--sam-model-path", type=str, default=DEEPSEEK_OCR2_MODEL,
@@ -387,6 +314,18 @@ def main():
     )
     args = parser.parse_args()
 
+    train_labels = args.labels_dir / "train.json"
+    val_labels = args.labels_dir / "val.json"
+    images_dir = args.doclaynet_dir / "PNG"
+
+    if not train_labels.exists():
+        print(
+            f"Order labels not found at {args.labels_dir}\n"
+            "Generate them first:\n"
+            "  python -m benchmark.tier2_hybrid.training.generate_order_labels"
+        )
+        sys.exit(1)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"Loading SAM encoder from {args.sam_model_path}...")
@@ -398,9 +337,9 @@ def main():
     num_params = sum(p.numel() for p in order_head.parameters() if p.requires_grad)
     print(f"Reading order head parameters: {num_params:,} ({num_params/1e6:.1f}M)")
 
-    print(f"Loading ReadingBank from {args.readingbank_dir}...")
-    train_ds = ReadingBankDataset(args.readingbank_dir, split="train")
-    val_ds = ReadingBankDataset(args.readingbank_dir, split="val")
+    print("Loading DocLayNet order-labeled dataset...")
+    train_ds = DocLayNetOrderDataset(train_labels, images_dir)
+    val_ds = DocLayNetOrderDataset(val_labels, images_dir)
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
