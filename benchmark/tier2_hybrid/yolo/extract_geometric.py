@@ -33,6 +33,7 @@ from benchmark.config import (
     OUTPUT_DIR,
     RENDER_DPI,
     YOLO_MODEL,
+    find_pdfs,
 )
 from benchmark.output import method_output_dir, write_page_markdown, write_summary
 from benchmark.pdf_render import pixel_to_pdf_coords, render_page
@@ -70,7 +71,7 @@ def detect_regions(model: YOLO, image, scale: float) -> List[Region]:
 def run(input_dir: Path, output_base: Path):
     out_dir = method_output_dir(output_base, METHOD_NAME)
     timing_csv = out_dir / "timing.csv"
-    pdf_files = sorted(input_dir.glob("*.pdf"))
+    pdf_files = find_pdfs(input_dir)
 
     if not pdf_files:
         print(f"No PDFs found in {input_dir}")

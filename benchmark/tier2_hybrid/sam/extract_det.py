@@ -35,6 +35,7 @@ from benchmark.config import (
     OUTPUT_DIR,
     RENDER_DPI,
     PROJECT_ROOT,
+    find_pdfs,
 )
 from benchmark.output import method_output_dir, write_page_markdown, write_summary
 from benchmark.pdf_render import pixel_to_pdf_coords, render_page
@@ -112,7 +113,7 @@ def run(
     method_name = f"tier2_sam_det_{order_mode}"
     out_dir = method_output_dir(output_base, method_name)
     timing_csv = out_dir / "timing.csv"
-    pdf_files = sorted(input_dir.glob("*.pdf"))
+    pdf_files = find_pdfs(input_dir)
 
     if not pdf_files:
         print(f"No PDFs found in {input_dir}")

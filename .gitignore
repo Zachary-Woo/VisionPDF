@@ -1,2 +1,8 @@
 # Ignore notes
 notes/
+
+# Python
+__pycache__/
+
+# Models
+models/

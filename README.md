@@ -224,7 +224,7 @@ pip install flash-attn --no-build-isolation
 Ultralytics needs direct `.pt` file. Download first:
 
 ```bash
-huggingface-cli download hantian/yolo-doclaynet yolov8x-doclaynet.pt --local-dir models
+hf download hantian/yolo-doclaynet yolov8x-doclaynet.pt --local-dir models
 ```
 
 Scripts include fallback that auto-downloads via `hf_hub_download` if bare repo ID fails.

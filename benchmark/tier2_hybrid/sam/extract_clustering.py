@@ -42,7 +42,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
-from benchmark.config import DEEPSEEK_OCR2_MODEL, OMNIDOCBENCH_PDFS, OUTPUT_DIR, RENDER_DPI
+from benchmark.config import DEEPSEEK_OCR2_MODEL, OMNIDOCBENCH_PDFS, OUTPUT_DIR, RENDER_DPI, find_pdfs
 from benchmark.output import method_output_dir, write_page_markdown, write_summary
 from benchmark.pdf_render import pixel_to_pdf_coords, render_page
 from benchmark.tier2_hybrid.sam.encoder import load_sam_encoder, preprocess_image
@@ -171,7 +171,7 @@ def extract_text_for_regions(
 def run(input_dir: Path, output_base: Path, model_path: str):
     out_dir = method_output_dir(output_base, METHOD_NAME)
     timing_csv = out_dir / "timing.csv"
-    pdf_files = sorted(input_dir.glob("*.pdf"))
+    pdf_files = find_pdfs(input_dir)
 
     if not pdf_files:
         print(f"No PDFs found in {input_dir}")

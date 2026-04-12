@@ -34,9 +34,19 @@ _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
+_DOCLAYNET_ZIP_URL = (
+    "https://codait-cos-dax.s3.us.cloud-object-storage.appdomain.cloud"
+    "/dax-doclaynet/1.0.0/DocLayNet_core.zip"
+)
+
+
 def download_doclaynet(target_dir: Path) -> Path:
     """
-    Download DocLayNet COCO dataset from HuggingFace if not already present.
+    Download DocLayNet COCO dataset if not already present.
+
+    The HuggingFace repo (ds4sd/DocLayNet) only hosts a loading script,
+    not the raw files. The actual data is a ~28 GB zip on IBM Cloud S3.
+    This function downloads and extracts it.
 
     Expected structure after download:
       DocLayNet/
@@ -51,25 +61,65 @@ def download_doclaynet(target_dir: Path) -> Path:
         print(f"DocLayNet already present at {target_dir}")
         return target_dir
 
-    print("Downloading DocLayNet from HuggingFace (ds4sd/DocLayNet)...")
-    print("This may take a while (~30GB for full dataset).")
-    print("Alternatively, download manually and place under:", target_dir)
+    import shutil
+    import tempfile
+    import urllib.request
+    import zipfile
 
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Downloading DocLayNet core dataset (~28 GB)...")
+    print(f"  Source: {_DOCLAYNET_ZIP_URL}")
+    print(f"  Target: {target_dir}")
+    print("Alternatively, download manually from the URL above,")
+    print("extract, and place COCO/ and PNG/ under:", target_dir)
+
+    zip_path = Path(tempfile.mktemp(suffix=".zip"))
     try:
-        from huggingface_hub import snapshot_download
-        snapshot_download(
-            "ds4sd/DocLayNet",
-            repo_type="dataset",
-            local_dir=str(target_dir),
-            allow_patterns=["COCO/*.json", "PNG/**"],
-        )
+        def _report(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            if total_size > 0:
+                pct = min(downloaded / total_size * 100, 100)
+                mb = downloaded / 1e6
+                total_mb = total_size / 1e6
+                print(f"\r  {mb:.0f}/{total_mb:.0f} MB ({pct:.1f}%)", end="", flush=True)
+
+        urllib.request.urlretrieve(_DOCLAYNET_ZIP_URL, zip_path, reporthook=_report)
+        print()
+
+        print("Extracting...")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(target_dir)
+
+        # The zip may nest files under a subdirectory; move them up if needed.
+        for subdir_name in ["DocLayNet_core", "DocLayNet"]:
+            nested = target_dir / subdir_name
+            if nested.is_dir() and (nested / "COCO").exists():
+                for item in nested.iterdir():
+                    dest = target_dir / item.name
+                    if not dest.exists():
+                        shutil.move(str(item), str(dest))
+                shutil.rmtree(nested, ignore_errors=True)
+                break
+
     except Exception as e:
         raise RuntimeError(
             f"Failed to download DocLayNet: {e}\n"
-            f"Please download manually from https://huggingface.co/datasets/ds4sd/DocLayNet\n"
-            f"and place under {target_dir}"
+            f"Please download manually from:\n"
+            f"  {_DOCLAYNET_ZIP_URL}\n"
+            f"Extract and place COCO/ and PNG/ under {target_dir}"
         ) from e
+    finally:
+        if zip_path.exists():
+            zip_path.unlink(missing_ok=True)
 
+    if not (target_dir / "COCO" / "train.json").exists():
+        raise FileNotFoundError(
+            f"Download succeeded but COCO/train.json not found in {target_dir}.\n"
+            f"Check the extracted contents and move COCO/ + PNG/ to {target_dir}."
+        )
+
+    print(f"DocLayNet ready at {target_dir}")
     return target_dir
 
 
