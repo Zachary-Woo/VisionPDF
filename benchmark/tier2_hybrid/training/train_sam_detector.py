@@ -59,7 +59,7 @@ def train_one_epoch(
         gt_boxes_list = batch["boxes"]
         gt_labels_list = batch["labels"]
 
-        with torch.cuda.amp.autocast(dtype=torch.float16):
+        with torch.amp.autocast("cuda", dtype=torch.float16):
             outputs = model(images)
 
         batch_cls_loss = 0.0
@@ -137,7 +137,8 @@ def validate(
     device: torch.device,
 ) -> float:
     """
-    Simple validation pass computing average focal loss on the val set.
+    Validation pass computing all three FCOS losses (classification,
+    regression, centerness) to match training.
     """
     model.eval()
     total_loss = 0.0
@@ -148,11 +149,13 @@ def validate(
         gt_boxes_list = batch["boxes"]
         gt_labels_list = batch["labels"]
 
-        with torch.cuda.amp.autocast(dtype=torch.float16):
+        with torch.amp.autocast("cuda", dtype=torch.float16):
             outputs = model(images)
 
         B = images.shape[0]
-        batch_loss = 0.0
+        batch_cls_loss = 0.0
+        batch_reg_loss = 0.0
+        batch_cent_loss = 0.0
 
         for b in range(B):
             gt_boxes = gt_boxes_list[b].to(device)
@@ -171,13 +174,28 @@ def validate(
             for level_name in outputs:
                 cls_logits, bbox_pred, centerness = outputs[level_name]
                 cls_target, reg_target, cent_target = targets[level_name]
+
                 cls_pred_flat = cls_logits[b].permute(1, 2, 0).reshape(-1, NUM_CLASSES)
                 cls_target_flat = cls_target.reshape(-1)
-                batch_loss = batch_loss + focal_loss(
+                batch_cls_loss += focal_loss(
                     cls_pred_flat.float(), cls_target_flat
                 ).item()
 
-        total_loss += batch_loss / B
+                fg_mask = cls_target.reshape(-1) > 0
+                if fg_mask.any():
+                    pred_ltrb = bbox_pred[b].permute(1, 2, 0).reshape(-1, 4)[fg_mask]
+                    tgt_ltrb = reg_target.reshape(-1, 4)[fg_mask]
+                    batch_reg_loss += giou_loss(
+                        pred_ltrb.float(), tgt_ltrb
+                    ).item()
+
+                    pred_cent = centerness[b, 0].reshape(-1)[fg_mask]
+                    tgt_cent = cent_target.reshape(-1)[fg_mask]
+                    batch_cent_loss += F.binary_cross_entropy_with_logits(
+                        pred_cent.float(), tgt_cent, reduction="mean"
+                    ).item()
+
+        total_loss += (batch_cls_loss + batch_reg_loss + batch_cent_loss) / B
         num_batches += 1
 
     return total_loss / max(num_batches, 1)
@@ -235,7 +253,7 @@ def main():
         trainable_params, lr=args.lr, weight_decay=args.weight_decay,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs * len(train_loader),
+        optimizer, T_max=args.epochs,
     )
 
     args.save_path.parent.mkdir(parents=True, exist_ok=True)

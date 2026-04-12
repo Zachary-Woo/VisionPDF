@@ -415,7 +415,7 @@ def main():
         order_head.parameters(), lr=args.lr, weight_decay=0.01,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs * len(train_loader),
+        optimizer, T_max=args.epochs,
     )
 
     args.save_path.parent.mkdir(parents=True, exist_ok=True)
