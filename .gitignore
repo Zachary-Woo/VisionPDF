@@ -5,7 +5,8 @@ notes/
 __pycache__/
 
 # Models
-models/
+models/.cache/
+models/yolov8x-doclaynet.pt
 
 # Datasets
 DocLayNet/
