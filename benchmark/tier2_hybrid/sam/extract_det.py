@@ -5,10 +5,9 @@ Uses the frozen SAM ViT-B encoder from DeepSeek OCR 2 with a lightweight
 FPN + FCOS head trained on DocLayNet to detect labelled layout regions.
 Text is extracted from the native PDF text layer within each region.
 
-Supports three reading order modes:
+Supports two reading order modes:
   --order geometric     Naive top-to-bottom, left-to-right sort
   --order layoutreader  LayoutReader (LayoutLMv3) learned reading order
-  --order visual        Trained visual reading order head (SAM features)
 
 This allows direct comparison against YOLO-based methods using the
 same reading order models.
@@ -50,7 +49,6 @@ from benchmark.timing import append_timing_row, timed
 
 MODELS_DIR = PROJECT_ROOT / "models"
 DEFAULT_DETECTOR_CKPT = MODELS_DIR / "sam_doclaynet_head.pt"
-DEFAULT_ORDER_CKPT = MODELS_DIR / "sam_reading_order.pt"
 
 
 def load_detector(
@@ -108,7 +106,6 @@ def run(
     order_mode: str,
     sam_model_path: str,
     detector_ckpt: Path,
-    order_ckpt: Path,
 ):
     method_name = f"tier2_sam_det_{order_mode}"
     out_dir = method_output_dir(output_base, method_name)
@@ -126,7 +123,6 @@ def run(
     detector = load_detector(sam_model_path, detector_ckpt, device)
 
     lr_model = None
-    visual_order_model = None
 
     if order_mode == "layoutreader":
         from transformers import LayoutLMv3ForTokenClassification
@@ -137,11 +133,6 @@ def run(
             .to(dtype=torch.bfloat16, device=device)
             .eval()
         )
-
-    elif order_mode == "visual":
-        from benchmark.tier2_hybrid.sam.order_head import load_order_head
-        print(f"Loading visual reading order head: {order_ckpt}")
-        visual_order_model = load_order_head(order_ckpt, device)
 
     for pdf_path in tqdm(pdf_files, desc=method_name):
         page_id = pdf_path.stem
@@ -167,14 +158,6 @@ def run(
                 doc.close()
                 regions = predict_reading_order(lr_model, regions, page_width, page_height)
 
-            elif order_mode == "visual":
-                from benchmark.tier2_hybrid.sam.order_head import predict_visual_order
-                features = detector.backbone(tensor)
-                regions = predict_visual_order(
-                    visual_order_model, regions, features["p3"],
-                    img_scale, render_scale,
-                )
-
             markdown = regions_to_markdown(regions, str(pdf_path))
 
         write_page_markdown(out_dir, page_id, markdown)
@@ -192,7 +175,7 @@ def main():
     parser.add_argument("--input-dir", type=Path, default=OMNIDOCBENCH_PDFS)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     parser.add_argument(
-        "--order", choices=["geometric", "layoutreader", "visual"],
+        "--order", choices=["geometric", "layoutreader"],
         default="geometric",
         help="Reading order method",
     )
@@ -204,14 +187,10 @@ def main():
         "--detector-ckpt", type=Path, default=DEFAULT_DETECTOR_CKPT,
         help="Path to trained FPN+FCOS checkpoint",
     )
-    parser.add_argument(
-        "--order-ckpt", type=Path, default=DEFAULT_ORDER_CKPT,
-        help="Path to trained reading order head checkpoint (for --order visual)",
-    )
     args = parser.parse_args()
     run(
         args.input_dir, args.output_dir, args.order,
-        args.sam_model_path, args.detector_ckpt, args.order_ckpt,
+        args.sam_model_path, args.detector_ckpt,
     )
 
 

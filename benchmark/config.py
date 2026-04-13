@@ -58,7 +58,6 @@ DEEPSEEK_OCR2_MODEL = "deepseek-ai/DeepSeek-OCR-2"
 # ---------------------------------------------------------------------------
 MODELS_DIR = PROJECT_ROOT / "models"
 SAM_DETECTOR_CHECKPOINT = MODELS_DIR / "sam_doclaynet_head.pt"
-SAM_ORDER_CHECKPOINT = MODELS_DIR / "sam_reading_order.pt"
 
 # ---------------------------------------------------------------------------
 # Dataset paths for training
