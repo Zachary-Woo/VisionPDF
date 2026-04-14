@@ -19,8 +19,13 @@ Usage:
 """
 
 import argparse
+import pathlib
+import platform
 import sys
 from pathlib import Path
+
+if platform.system() == "Windows":
+    pathlib.PosixPath = pathlib.WindowsPath
 
 import pypdfium2 as pdfium
 import torch
@@ -36,6 +41,8 @@ from benchmark.config import (
     OUTPUT_DIR,
     RENDER_DPI,
     YOLO_MODEL,
+    YOLO_MODEL_FILE,
+    YOLO_MODEL_REPO,
     find_pdfs,
 )
 from benchmark.output import method_output_dir, write_page_markdown, write_summary
@@ -63,12 +70,13 @@ def run(input_dir: Path, output_base: Path):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"Loading YOLO model: {YOLO_MODEL}")
-    try:
-        yolo_model = YOLO(YOLO_MODEL)
-    except Exception:
+    print(f"Loading YOLO model: {YOLO_MODEL_FILE}")
+    if YOLO_MODEL.exists():
+        yolo_model = YOLO(str(YOLO_MODEL))
+    else:
         from huggingface_hub import hf_hub_download
-        local_pt = hf_hub_download(YOLO_MODEL, filename="yolov8x-doclaynet.pt")
+        print(f"  Downloading {YOLO_MODEL_FILE} from {YOLO_MODEL_REPO}...")
+        local_pt = hf_hub_download(YOLO_MODEL_REPO, filename=YOLO_MODEL_FILE)
         yolo_model = YOLO(local_pt)
 
     print(f"Loading LayoutReader: {LAYOUTREADER_MODEL}")

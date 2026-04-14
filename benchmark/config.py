@@ -19,13 +19,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Download from: https://huggingface.co/datasets/samiuc/omnidocbench
 # Expected structure:
 #   OmniDocBench/
-#     images/       <- page images (jpg)
-#     pdfs/         <- single-page PDFs
+#     images/       <- page images (jpg/png)
+#     ori_pdfs/     <- original single-page PDFs with embedded text layers
+#     pdfs/         <- image-only PDFs (not used -- no text layer)
 #     OmniDocBench.json  <- ground-truth annotations
 # ---------------------------------------------------------------------------
 OMNIDOCBENCH_DIR = PROJECT_ROOT / "OmniDocBench"
 OMNIDOCBENCH_IMAGES = OMNIDOCBENCH_DIR / "images"
-OMNIDOCBENCH_PDFS = OMNIDOCBENCH_DIR / "pdfs"
+OMNIDOCBENCH_PDFS = OMNIDOCBENCH_DIR / "ori_pdfs"
 OMNIDOCBENCH_JSON = OMNIDOCBENCH_DIR / "OmniDocBench.json"
 
 # ---------------------------------------------------------------------------
@@ -41,23 +42,24 @@ RENDER_DPI = 144  # balance between detail and speed; 72 * 2
 # ---------------------------------------------------------------------------
 # Model identifiers (Hugging Face repos / local paths)
 # ---------------------------------------------------------------------------
-# The hantian/yolo-doclaynet HF repo hosts multiple model sizes.
-# Ultralytics needs a direct path to a .pt file.  Download first:
-#   hf download hantian/yolo-doclaynet yolov8x-doclaynet.pt --local-dir models
-# Then set YOLO_MODEL to the local path, or leave the HF URI below
-# which works with ultralytics >= 8.3 when the repo contains a single
-# matching file for the requested variant.
-YOLO_MODEL = "hantian/yolo-doclaynet"
-
-LAYOUTREADER_MODEL = "hantian/layoutreader"
-
-DEEPSEEK_OCR2_MODEL = "deepseek-ai/DeepSeek-OCR-2"
-
-# ---------------------------------------------------------------------------
 # Trained model checkpoints (created by training scripts)
 # ---------------------------------------------------------------------------
 MODELS_DIR = PROJECT_ROOT / "models"
 SAM_DETECTOR_CHECKPOINT = MODELS_DIR / "sam_doclaynet_head.pt"
+
+# ---------------------------------------------------------------------------
+# YOLO layout detection model (trained on DocLayNet).
+# The hantian/yolo-doclaynet HF repo hosts v8/v10/v11/v12/v26 weights.
+# Download with:
+#   huggingface-cli download hantian/yolo-doclaynet yolo26l-doclaynet.pt --local-dir models
+# ---------------------------------------------------------------------------
+YOLO_MODEL_REPO = "hantian/yolo-doclaynet"
+YOLO_MODEL_FILE = "yolo26l-doclaynet.pt"
+YOLO_MODEL = MODELS_DIR / YOLO_MODEL_FILE
+
+LAYOUTREADER_MODEL = "hantian/layoutreader"
+
+DEEPSEEK_OCR2_MODEL = "deepseek-ai/DeepSeek-OCR-2"
 
 # ---------------------------------------------------------------------------
 # Dataset paths for training
@@ -116,12 +118,14 @@ _OMNIDOCBENCH_HF_REPO = "samiuc/omnidocbench"
 def ensure_omnidocbench(pdf_dir: Optional[Path] = None) -> Path:
     """
     Download the OmniDocBench dataset from HuggingFace if not already
-    present, including single-page PDFs with real text layers.
+    present, including original single-page PDFs with real text layers.
 
-    Uses the samiuc/omnidocbench mirror which keeps pdfs/, ori_pdfs/,
-    images/, and OmniDocBench.json together on main.
+    Uses samiuc/omnidocbench which keeps ori_pdfs/, images/, and
+    OmniDocBench.json together on main.  We download ori_pdfs/ (the
+    originals with embedded text layers) rather than pdfs/ (which are
+    just images wrapped in PDF format).
 
-    Returns the path to the pdfs/ directory.
+    Returns the path to the ori_pdfs/ directory.
     """
     pdf_dir = pdf_dir or OMNIDOCBENCH_PDFS
 
@@ -139,7 +143,7 @@ def ensure_omnidocbench(pdf_dir: Optional[Path] = None) -> Path:
             local_dir=str(OMNIDOCBENCH_DIR),
             allow_patterns=[
                 "OmniDocBench.json",
-                "pdfs/**",
+                "ori_pdfs/**",
                 "images/**",
             ],
         )
@@ -147,7 +151,7 @@ def ensure_omnidocbench(pdf_dir: Optional[Path] = None) -> Path:
         raise RuntimeError(
             f"Failed to download OmniDocBench: {e}\n"
             "Please download manually:\n"
-            f"  hf download {_OMNIDOCBENCH_HF_REPO}"
+            f"  huggingface-cli download {_OMNIDOCBENCH_HF_REPO}"
             " --repo-type dataset --local-dir OmniDocBench\n"
             f"and place under {OMNIDOCBENCH_DIR}"
         ) from e

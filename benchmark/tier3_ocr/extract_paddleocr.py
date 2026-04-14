@@ -22,10 +22,14 @@ Windows compatibility notes:
 Install (CPU -- simplest on Windows):
     pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
     pip install "paddleocr>=3.2"
+    # PP-StructureV3 (default --mode structure) needs PaddleX OCR extras:
+    pip install "paddlex[ocr]"
+    # Pin to your installed version if pip complains, e.g. pip show paddlex
 
 Install (GPU -- CUDA 11.8):
     pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
     pip install "paddleocr>=3.2"
+    pip install "paddlex[ocr]"
 
 Usage:
     python -m benchmark.tier3_ocr.extract_paddleocr [--input-dir path]
@@ -58,6 +62,22 @@ from benchmark.timing import append_timing_row, timed
 
 METHOD_OCR = "tier3_paddleocr"
 METHOD_STRUCTURE = "tier3_paddleocr_structure"
+
+
+def _is_structure_dependency_error(exc: BaseException) -> bool:
+    """
+    Return True if the exception chain indicates missing PaddleX OCR extras
+    required for PP-StructureV3 (paddlex[ocr]).
+    """
+    cur: BaseException | None = exc
+    while cur is not None:
+        if type(cur).__name__ == "DependencyError":
+            return True
+        msg = str(cur).lower()
+        if "paddlex[ocr]" in msg or "requires additional dependencies" in msg:
+            return True
+        cur = cur.__cause__
+    return False
 
 
 def _check_paddle_installed() -> bool:
@@ -98,6 +118,20 @@ def run_structure(input_dir: Path, output_base: Path, lang: str):
             use_doc_unwarping=False,
         )
     except Exception as e:
+        if _is_structure_dependency_error(e):
+            print(
+                "PP-StructureV3 needs PaddleX OCR extras.  Install them, then retry:\n"
+                "\n"
+                '  pip install "paddlex[ocr]"\n'
+                "\n"
+                "If pip needs an exact version, run `pip show paddlex` and use:\n"
+                "\n"
+                '  pip install "paddlex[ocr]==<version from pip show>"\n'
+                "\n"
+                "Or use basic OCR only:  python -m benchmark.tier3_ocr.extract_paddleocr "
+                "--mode ocr\n"
+            )
+            raise SystemExit(1) from e
         print(f"Failed to initialise PP-StructureV3: {e}")
         print("Falling back to CPU mode...")
         pipeline = PPStructureV3(
@@ -253,10 +287,12 @@ def run(input_dir: Path, output_base: Path, mode: str, lang: str):
             "  # CPU (simplest on Windows):\n"
             "  pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/\n"
             "  pip install \"paddleocr>=3.2\"\n"
+            "  pip install \"paddlex[ocr]\"\n"
             "\n"
             "  # GPU (CUDA 11.8):\n"
             "  pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/\n"
             "  pip install \"paddleocr>=3.2\"\n"
+            "  pip install \"paddlex[ocr]\"\n"
             "\n"
             "Windows notes:\n"
             "  - If you also have PyTorch installed, PaddleOCR must be imported\n"

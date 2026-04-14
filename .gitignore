@@ -6,8 +6,22 @@ notes/slides_and_notes.md
 __pycache__/
 
 # Models
-models/.cache/
-models/yolov8x-doclaynet.pt
+models/
 
 # Datasets
 DocLayNet/
+OmniDocBench/
+
+# Results
+results/
+
+# Demo Files
+demo/doc*
+
+# Environment Variables
+.env
+
+# Extras
+debug*
+out.txt
+openrouter_examples/

@@ -18,9 +18,14 @@ Usage:
 """
 
 import argparse
+import pathlib
+import platform
 import sys
 from pathlib import Path
 from typing import List
+
+if platform.system() == "Windows":
+    pathlib.PosixPath = pathlib.WindowsPath
 
 from tqdm import tqdm
 from ultralytics import YOLO
@@ -33,6 +38,8 @@ from benchmark.config import (
     OUTPUT_DIR,
     RENDER_DPI,
     YOLO_MODEL,
+    YOLO_MODEL_FILE,
+    YOLO_MODEL_REPO,
     find_pdfs,
 )
 from benchmark.output import method_output_dir, write_page_markdown, write_summary
@@ -77,12 +84,13 @@ def run(input_dir: Path, output_base: Path):
         print(f"No PDFs found in {input_dir}")
         return
 
-    print(f"Loading YOLO model: {YOLO_MODEL}")
-    try:
-        model = YOLO(YOLO_MODEL)
-    except Exception:
+    print(f"Loading YOLO model: {YOLO_MODEL_FILE}")
+    if YOLO_MODEL.exists():
+        model = YOLO(str(YOLO_MODEL))
+    else:
         from huggingface_hub import hf_hub_download
-        local_pt = hf_hub_download(YOLO_MODEL, filename="yolov8x-doclaynet.pt")
+        print(f"  Downloading {YOLO_MODEL_FILE} from {YOLO_MODEL_REPO}...")
+        local_pt = hf_hub_download(YOLO_MODEL_REPO, filename=YOLO_MODEL_FILE)
         model = YOLO(local_pt)
 
     for pdf_path in tqdm(pdf_files, desc=METHOD_NAME):

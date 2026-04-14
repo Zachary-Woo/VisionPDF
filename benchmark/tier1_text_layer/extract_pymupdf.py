@@ -16,8 +16,38 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
 import pymupdf  # fitz
 from tqdm import tqdm
+
+
+def _patch_onnx_int32():
+    """
+    Monkey-patch onnxruntime InferenceSession.run so that any int32 input
+    arrays are silently upcast to int64.  Works around a dtype mismatch
+    between NumPy/PyMuPDF's layout model and the ONNX graph, which expects
+    all integer tensors as int64.
+    """
+    try:
+        from onnxruntime import InferenceSession
+    except ImportError:
+        return
+
+    _orig_run = InferenceSession.run
+
+    def _patched_run(self, output_names, input_feed, run_options=None):
+        fixed = {}
+        for k, v in input_feed.items():
+            arr = np.asarray(v)
+            if arr.dtype == np.int32:
+                arr = arr.astype(np.int64)
+            fixed[k] = arr
+        return _orig_run(self, output_names, fixed, run_options)
+
+    InferenceSession.run = _patched_run
+
+
+_patch_onnx_int32()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 

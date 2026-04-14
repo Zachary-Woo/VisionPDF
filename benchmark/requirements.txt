@@ -34,6 +34,7 @@ easyocr>=1.7
 #   CPU:  pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
 #   GPU:  pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
 #   Then: pip install "paddleocr>=3.2"
+#   PP-StructureV3 (extract_paddleocr default --mode structure): pip install "paddlex[ocr]"
 # Windows: import torch BEFORE paddleocr to avoid DLL conflicts.
 # RTX 50-series: needs special PaddlePaddle wheels (see PaddleOCR install docs).
 

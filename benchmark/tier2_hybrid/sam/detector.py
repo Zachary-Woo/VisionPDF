@@ -166,7 +166,7 @@ class FCOSHead(nn.Module):
         reg_feat = self.reg_tower(x)
         return (
             self.cls_logits(cls_feat),
-            torch.exp(self.bbox_pred(reg_feat)),
+            torch.exp(self.bbox_pred(reg_feat).clamp(max=16.0)),
             self.centerness(cls_feat),
         )
 

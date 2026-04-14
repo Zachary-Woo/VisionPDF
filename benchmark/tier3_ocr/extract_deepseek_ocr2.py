@@ -6,6 +6,15 @@ encoder + language model decoder) via the HuggingFace ``AutoModel`` path.
 This represents the heavyweight VLM approach where the model performs
 both layout understanding and text recognition from the page image.
 
+Known issue:
+  The DeepSeek-OCR-2 remote model code imports ``LlamaFlashAttention2`` from
+  ``transformers``, which was removed in transformers >= 4.46. If you hit an
+  ``ImportError`` for that symbol, patch the HuggingFace-cached file
+  ``~/.cache/huggingface/modules/transformers_modules/deepseek_hyphen_ai/
+  DeepSeek_hyphen_OCR_hyphen_2/<revision>/modeling_deepseekv2.py`` so the
+  import falls back to ``LlamaAttention`` (which handles all attention
+  backends in modern transformers).
+
 Prerequisites:
   - CUDA GPU with >= 24 GB VRAM (tested on RTX 4090)
   - flash-attn installed
@@ -45,7 +54,7 @@ def load_model(model_name: str):
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModel.from_pretrained(
         model_name,
-        _attn_implementation="flash_attention_2",
+        _attn_implementation="eager", # default is flash_attention_2 - changed to eager to avoid ImportError
         trust_remote_code=True,
         use_safetensors=True,
     )

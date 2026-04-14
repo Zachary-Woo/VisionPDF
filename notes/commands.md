@@ -12,7 +12,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 pip install -r benchmark/requirements.txt
 
 # Download YOLO weights
-hf download hantian/yolo-doclaynet yolov8x-doclaynet.pt --local-dir models
+hf download hantian/yolo-doclaynet yolo26l-doclaynet.pt --local-dir models 
 
 # (Optional) PaddleOCR -- requires separate install:
 #   CPU:  pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
