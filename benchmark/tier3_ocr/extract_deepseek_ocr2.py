@@ -1,7 +1,7 @@
 """
 Tier 3 -- Full DeepSeek OCR 2 VLM inference.
 
-Runs the complete DeepSeek OCR 2 model (SAM encoder + Qwen2 causal-flow
+Runs the complete DeepSeek OCR 2 model (visual encoder + Qwen2 causal-flow
 encoder + language model decoder) via the HuggingFace ``AutoModel`` path.
 This represents the heavyweight VLM approach where the model performs
 both layout understanding and text recognition from the page image.

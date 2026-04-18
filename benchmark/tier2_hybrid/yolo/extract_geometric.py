@@ -27,6 +27,7 @@ from typing import List
 if platform.system() == "Windows":
     pathlib.PosixPath = pathlib.WindowsPath
 
+import pypdfium2 as pdfium
 from tqdm import tqdm
 from ultralytics import YOLO
 
@@ -44,12 +45,11 @@ from benchmark.config import (
 )
 from benchmark.output import method_output_dir, write_page_markdown, write_summary
 from benchmark.pdf_render import pixel_to_pdf_coords, render_page
-from benchmark.tier2_hybrid.shared import (
-    Region,
-    regions_to_markdown,
-    sort_regions_geometric,
-)
+from benchmark.tier2_hybrid.shared import Region, sort_regions_geometric
+from benchmark.tier2_hybrid.yolo.text_assembly import regions_to_markdown
 from benchmark.timing import append_timing_row, timed
+
+PAGE_SEPARATOR = "\n\n---\n\n"
 
 METHOD_NAME = "tier2_yolo_geometric"
 
@@ -75,7 +75,8 @@ def detect_regions(model: YOLO, image, scale: float) -> List[Region]:
 
 # ── Main pipeline ────────────────────────────────────────────────────────
 
-def run(input_dir: Path, output_base: Path):
+def run(input_dir: Path, output_base: Path, enable_tables: bool = True,
+        table_mode: str = "accurate"):
     out_dir = method_output_dir(output_base, METHOD_NAME)
     timing_csv = out_dir / "timing.csv"
     pdf_files = find_pdfs(input_dir)
@@ -96,14 +97,55 @@ def run(input_dir: Path, output_base: Path):
     for pdf_path in tqdm(pdf_files, desc=METHOD_NAME):
         page_id = pdf_path.stem
 
-        with timed(use_cuda=True) as t:
-            image, scale = render_page(str(pdf_path), dpi=RENDER_DPI)
-            regions = detect_regions(model, image, scale)
-            regions = sort_regions_geometric(regions)
-            markdown = regions_to_markdown(regions, str(pdf_path))
+        doc = pdfium.PdfDocument(str(pdf_path))
+        n_pages = len(doc)
+        doc.close()
 
+        page_parts: List[str] = []
+        phase_totals = {
+            "t_render": 0.0,
+            "t_detect": 0.0,
+            "t_reading_order": 0.0,
+            "t_assemble": 0.0,
+        }
+        cuda_total = 0.0
+        cuda_seen = False
+
+        for pi in range(n_pages):
+            with timed(use_cuda=True) as t_r:
+                image, scale = render_page(
+                    str(pdf_path), page_index=pi, dpi=RENDER_DPI,
+                )
+            with timed(use_cuda=True) as t_d:
+                regions = detect_regions(model, image, scale)
+            with timed(use_cuda=False) as t_o:
+                regions = sort_regions_geometric(regions)
+            with timed(use_cuda=False) as t_a:
+                page_md = regions_to_markdown(
+                    regions, str(pdf_path), page_index=pi,
+                    page_image=image,
+                    enable_tables=enable_tables,
+                    table_mode=table_mode,
+                )
+
+            page_parts.append(page_md)
+            phase_totals["t_render"] += t_r.wall_seconds
+            phase_totals["t_detect"] += t_d.wall_seconds
+            phase_totals["t_reading_order"] += t_o.wall_seconds
+            phase_totals["t_assemble"] += t_a.wall_seconds
+            for phase_timer in (t_r, t_d):
+                if phase_timer.cuda_seconds is not None:
+                    cuda_total += phase_timer.cuda_seconds
+                    cuda_seen = True
+
+        markdown = PAGE_SEPARATOR.join(page_parts)
+        wall_total = sum(phase_totals.values())
         write_page_markdown(out_dir, page_id, markdown)
-        append_timing_row(timing_csv, METHOD_NAME, page_id, t.wall_seconds, t.cuda_seconds)
+        append_timing_row(
+            timing_csv, METHOD_NAME, page_id,
+            wall_total, cuda_total if cuda_seen else None,
+            breakdown=phase_totals,
+        )
 
     write_summary(out_dir, METHOD_NAME, {"total_pages": len(pdf_files)})
     print(f"{METHOD_NAME}: processed {len(pdf_files)} pages -> {out_dir}")
@@ -113,8 +155,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, default=OMNIDOCBENCH_PDFS)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    parser.add_argument(
+        "--tables", dest="enable_tables", action="store_true",
+        default=True,
+        help="Run TableFormer on YOLO Table regions to produce HTML "
+             "cell structure (default: on).",
+    )
+    parser.add_argument(
+        "--no-tables", dest="enable_tables", action="store_false",
+        help="Emit [Table] placeholder instead of running TableFormer "
+             "(faster, avoids the TableFormer weight download).",
+    )
+    parser.add_argument(
+        "--table-mode", choices=["accurate", "fast"], default="accurate",
+        help="TableFormer quality mode (default: accurate).",
+    )
     args = parser.parse_args()
-    run(args.input_dir, args.output_dir)
+    run(
+        args.input_dir, args.output_dir,
+        enable_tables=args.enable_tables,
+        table_mode=args.table_mode,
+    )
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import csv
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 try:
     import torch
@@ -70,14 +70,32 @@ def append_timing_row(
     page_id: str,
     wall_seconds: float,
     cuda_seconds: Optional[float] = None,
+    breakdown: Optional[Dict[str, float]] = None,
 ):
     """
     Append a single timing row to *csv_path*, creating the file and
     header if it does not yet exist.
+
+    Parameters
+    ----------
+    csv_path, method, page_id, wall_seconds, cuda_seconds
+        Standard wall-clock / GPU timing for the page as a whole.
+    breakdown
+        Optional mapping of phase name to per-phase wall-clock seconds
+        (e.g. ``{"t_render": 0.21, "t_detect": 0.09, ...}``).  When
+        supplied, each key is written as an additional CSV column.  The
+        breakdown keys must be consistent across calls -- the header is
+        fixed on the first write.
     """
     file_exists = csv_path.exists()
     with open(csv_path, "a", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         if not file_exists:
-            writer.writerow(["method", "page_id", "wall_seconds", "cuda_seconds"])
-        writer.writerow([method, page_id, f"{wall_seconds:.6f}", cuda_seconds or ""])
+            header = ["method", "page_id", "wall_seconds", "cuda_seconds"]
+            if breakdown:
+                header.extend(breakdown.keys())
+            writer.writerow(header)
+        row = [method, page_id, f"{wall_seconds:.6f}", cuda_seconds or ""]
+        if breakdown:
+            row.extend(f"{v:.6f}" for v in breakdown.values())
+        writer.writerow(row)

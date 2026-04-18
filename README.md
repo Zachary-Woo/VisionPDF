@@ -54,13 +54,7 @@ Reading order determined by geometric heuristics or learned models.
 |--------|--------|-----------|---------------|
 | **YOLO + Geometric** | `tier2_hybrid/yolo/extract_geometric.py` | YOLO (DocLayNet) | Top-to-bottom, left-to-right |
 | **YOLO + LayoutReader** | `tier2_hybrid/yolo/extract_layoutreader.py` | YOLO (DocLayNet) | LayoutReader (LayoutLMv3) |
-| **SAM-Head + Geometric** | `tier2_hybrid/sam/extract_det.py --order geometric` | SAM ViT-B + FPN + FCOS (DocLayNet) | Top-to-bottom, left-to-right |
-| **SAM-Head + LayoutReader** | `tier2_hybrid/sam/extract_det.py --order layoutreader` | SAM ViT-B + FPN + FCOS (DocLayNet) | LayoutReader (LayoutLMv3) |
-| **(SAM + Clustering) + Geometric** | `tier2_hybrid/sam/extract_clustering.py` | SAM ViT-B feature clustering (naive) | Top-to-bottom, left-to-right |
 | **Docling RT-DETR** | `tier2_hybrid/docling/extract.py` | RT-DETR "Layout Heron" (DocLayNet) | Docling built-in ReadingOrderModel |
-
-SAM-based methods reuse frozen SAM ViT-B encoder from DeepSeek OCR 2.
-Only FPN + FCOS head (~3-5M params) is trainable. Encoder stays frozen.
 
 ### Tier 3 -- Full OCR / VLM
 
@@ -68,7 +62,7 @@ Complete visual analysis + text recognition from page image. No text layer used.
 
 | Method | Script | Notes |
 |--------|--------|-------|
-| **DeepSeek OCR 2** | `tier3_ocr/extract_deepseek_ocr2.py` | Full 14B+ VLM. SAM + Qwen2 causal-flow encoder + LM decoder. Needs >= 24GB VRAM + flash-attn. |
+| **DeepSeek OCR 2** | `tier3_ocr/extract_deepseek_ocr2.py` | Full 14B+ VLM. Visual + Qwen2 causal-flow encoder + LM decoder. Needs >= 24GB VRAM + flash-attn. |
 | **MonkeyOCR** | `tier3_ocr/extract_monkeyocr.py` | SRR paradigm (Structure-Recognition-Relation). 1.2-3B params. DocLayoutYOLO + own LayoutReader. |
 | **PaddleOCR** | `tier3_ocr/extract_paddleocr.py` | PP-StructureV3 (default) or PP-OCRv5. Separate install from PaddlePaddle index. |
 | **EasyOCR** | `tier3_ocr/extract_easyocr.py` | CRAFT detection + CRNN recognition. No structural understanding. Throughput baseline. |
@@ -95,16 +89,8 @@ benchmark/
         yolo/
             extract_geometric.py        YOLO + geometric sort
             extract_layoutreader.py     YOLO + LayoutReader
-        sam/
-            encoder.py                  SAM ViT-B architecture + weight loading
-            detector.py                 MultiScaleSAM + FPN + FCOS detection head
-            extract_clustering.py       SAM feature clustering (naive baseline)
-            extract_det.py              SAM-Head detection (geometric or LayoutReader order)
         docling/
             extract.py                  Docling RT-DETR pipeline
-        training/
-            doclaynet_dataset.py        DocLayNet COCO-format PyTorch Dataset
-            train_sam_detector.py       Train FPN+FCOS on frozen SAM encoder
 
     tier3_ocr/
         extract_deepseek_ocr2.py        DeepSeek OCR 2 full VLM
@@ -134,23 +120,11 @@ OmniDocBench/
 
 Place in project root. Path configured in `config.py` as `OMNIDOCBENCH_DIR`.
 
-### DocLayNet (Detection Head Training)
+### DocLayNet (taxonomy)
 
-11-class document layout dataset. Used to train SAM FPN+FCOS detection head.
-Download from [HuggingFace](https://huggingface.co/datasets/ds4sd/DocLayNet) (~30GB).
-Training script auto-downloads if not present.
-
-Expected structure:
-```
-DocLayNet/
-    COCO/
-        train.json, val.json, test.json
-    PNG/
-        <image files>
-```
-
-11 classes: Caption, Footnote, Formula, List-item, Page-footer, Page-header,
-Picture, Section-header, Table, Text, Title.
+Public 11-class document layout taxonomy. Pre-trained YOLO DocLayNet weights
+use this label set; see `benchmark/config.py` for the class list and markdown
+prefix mapping.
 
 ---
 
@@ -235,13 +209,6 @@ python -m benchmark.tier1_text_layer.extract_pymupdf --mode markdown
 python -m benchmark.tier2_hybrid.yolo.extract_geometric
 python -m benchmark.tier2_hybrid.yolo.extract_layoutreader
 
-# SAM-based (requires trained checkpoints -- see Training section)
-python -m benchmark.tier2_hybrid.sam.extract_det --order geometric
-python -m benchmark.tier2_hybrid.sam.extract_det --order layoutreader
-
-# SAM clustering baseline (no training needed, just DeepSeek OCR 2 weights)
-python -m benchmark.tier2_hybrid.sam.extract_clustering
-
 # Docling
 python -m benchmark.tier2_hybrid.docling.extract
 ```
@@ -268,64 +235,6 @@ python -m benchmark.evaluate.run_eval --omnidocbench-repo path/to/OmniDocBench
 
 Evaluation finds all method output dirs under `results/` that contain `summary.json`,
 computes metrics against ground truth, writes `benchmark_results.json`, prints comparison table.
-
----
-
-## Training
-
-One model needs training for SAM-based Tier 2 methods.
-
-### SAM Detection Head (FPN + FCOS on DocLayNet)
-
-Frozen SAM ViT-B encoder from DeepSeek OCR 2. Only FPN + FCOS head trains (~3-5M params).
-Reading order is handled by the pre-trained LayoutReader model (no training needed).
-
-```bash
-python -m benchmark.tier2_hybrid.training.train_sam_detector \
-    --model-path deepseek-ai/DeepSeek-OCR-2 \
-    --epochs 12 \
-    --batch-size 4 \
-    --lr 1e-4
-```
-
-Saves checkpoint to `models/sam_doclaynet_head.pt`.
-
-Architecture:
-```
-SAM ViT-B (frozen)
-    -> P3 (256ch, 64x64) -> P4 (512ch, 32x32) -> P5 (896ch, 16x16)
-    -> FPN (projects all to 256ch, top-down fusion)
-    -> FCOS Head (per-level: class logits + bbox LTRB + centerness)
-```
-
-Losses: focal loss (classification), GIoU loss (regression), BCE (centerness).
-Optimizer: AdamW + cosine schedule.
-
----
-
-## SAM-Based Detection Architecture
-
-Key idea: hijack SAM ViT-B encoder from DeepSeek OCR 2. Skip expensive 14B+ decoder entirely.
-Use frozen visual features for document layout detection instead.
-
-**Why SAM encoder?** DeepSeek OCR 2 trained it on massive document corpus.
-Features encode document-specific visual patterns (columns, tables, headers, etc.).
-Encoder alone is ~86M params. Entire DeepSeek model is 14B+. Using just encoder = huge speedup.
-
-**Two SAM-based approaches compared:**
-
-1. **Clustering baseline** (`extract_clustering.py`): Raw 16x16 feature grid clustered via
-   agglomerative clustering with spatial connectivity. No labels, no training. Naive but fast.
-
-2. **Trained detection head** (`extract_det.py`): Multi-scale features (P3/P4/P5) fed through
-   lightweight FPN + FCOS head trained on DocLayNet. Gets semantic labels (11 classes) +
-   precise bounding boxes. ~3-5M trainable params on top of frozen encoder.
-   Reading order handled by the pre-trained LayoutReader model (same as YOLO methods).
-
-Comparison matrix shows which component matters most:
-- Same detector (SAM-Head) + different order models = isolates reading order contribution
-- Different detectors (YOLO vs SAM-Head) + same order model = isolates detector quality
-- LayoutReader vs geometric = tests whether learned ordering beats heuristics
 
 ---
 
@@ -381,9 +290,8 @@ All paths and model IDs centralized in `benchmark/config.py`:
 | `RENDER_DPI` | 144 | PDF render resolution (72 * 2) |
 | `YOLO_MODEL` | `hantian/yolo-doclaynet` | YOLO weights (HF repo) |
 | `LAYOUTREADER_MODEL` | `hantian/layoutreader` | LayoutReader weights |
-| `DEEPSEEK_OCR2_MODEL` | `deepseek-ai/DeepSeek-OCR-2` | SAM encoder source |
-| `MODELS_DIR` | `PROJECT_ROOT/models` | Trained checkpoint dir |
-| `DOCLAYNET_DIR` | `PROJECT_ROOT/DocLayNet` | Detection + order training data |
+| `DEEPSEEK_OCR2_MODEL` | `deepseek-ai/DeepSeek-OCR-2` | DeepSeek OCR 2 weights |
+| `MODELS_DIR` | `PROJECT_ROOT/models` | Local model checkpoints (e.g. YOLO `.pt`) |
 
 ---
 
@@ -393,13 +301,11 @@ All paths and model IDs centralized in `benchmark/config.py`:
 |--------|----------|-------|
 | Tier 1 (text layer) | None | CPU only |
 | YOLO hybrid | ~4 GB | Standard YOLO inference |
-| SAM hybrid | ~6 GB | SAM ViT-B encoder + FPN/FCOS head |
 | Docling | ~4 GB | RT-DETR inference |
 | DeepSeek OCR 2 | >= 24 GB | Full 14B+ VLM. Needs flash-attn |
 | MonkeyOCR | >= 12 GB | 1.2-3B multimodal model |
 | PaddleOCR | ~2-4 GB | Lightweight. CPU fallback available |
 | EasyOCR | ~2 GB | CRAFT + CRNN. CPU fallback available |
-| SAM detector training | ~8-12 GB | Frozen encoder + trainable head |
 
 ---
 
@@ -426,9 +332,8 @@ Cannot extract reading order component directly because:
 - Output is dense feature vectors consumed by 14B+ decoder, not order indices
 - Deeply integrated -- not separable without the full model
 
-So instead: take just SAM encoder (which DeepSeek trained on documents), add a lightweight
-detection head trained on DocLayNet, and use the pre-trained LayoutReader for reading order.
-Tests whether SAM features alone carry enough layout information without the expensive decoder.
+Tier 2 in this repo compares fast layout detectors (YOLO DocLayNet, Docling) plus geometric
+versus learned reading order (LayoutReader), without running the full DeepSeek VLM stack.
 
 ### EasyOCR vs PaddleOCR
 

@@ -21,14 +21,9 @@ ultralytics>=8.3          # YOLO (v8/v11/v12/v26 models)
 transformers>=4.40        # LayoutReader (LayoutLMv3)
 docling>=2.0              # Docling RT-DETR pipeline
 
-# --- Tier 2: hybrid (SAM-based detection + reading order) ---
-einops>=0.7
-scikit-learn>=1.4         # agglomerative clustering for SAM feature baseline
-torchvision>=0.17         # RoIAlign, batched_nms for FCOS detection head
-pycocotools>=2.0          # COCO-format annotation parsing (DocLayNet)
-safetensors>=0.4          # loading DeepSeek OCR 2 weights
-
 # --- Tier 3: full OCR / VLM ---
+safetensors>=0.4          # HuggingFace weight formats (e.g. DeepSeek OCR 2)
+
 easyocr>=1.7
 # PaddleOCR requires separate installation (uses its own package index):
 #   CPU:  pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/

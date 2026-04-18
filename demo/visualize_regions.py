@@ -48,10 +48,14 @@ from benchmark.config import (
 from benchmark.pdf_render import render_page
 from benchmark.tier2_hybrid.shared import (
     Region,
-    merge_overlapping_regions,
-    predict_reading_order,
-    regions_to_markdown,
+    detect_page_columns,
+    sort_columns_reading_order,
     sort_regions_geometric,
+)
+from benchmark.tier2_hybrid.reading_order import predict_reading_order
+from benchmark.tier2_hybrid.yolo.text_assembly import (
+    merge_overlapping_regions,
+    regions_to_markdown,
 )
 
 LABEL_COLORS = {
@@ -197,12 +201,27 @@ def main():
         help="Directory for output files (default: demo/)",
     )
     parser.add_argument("--dpi", type=int, default=RENDER_DPI)
+    parser.add_argument(
+        "--tables", dest="enable_tables", action="store_true",
+        default=True,
+        help="Run TableFormer on YOLO Table regions to emit cell-level "
+             "HTML instead of the [Table] placeholder (default: on).",
+    )
+    parser.add_argument(
+        "--no-tables", dest="enable_tables", action="store_false",
+        help="Skip TableFormer and keep the [Table] placeholder "
+             "(faster, avoids the TableFormer weight download).",
+    )
+    parser.add_argument(
+        "--table-mode", choices=["accurate", "fast"], default="accurate",
+        help="TableFormer quality mode (default: accurate).",
+    )
     args = parser.parse_args()
 
     pdf_path = args.pdf
-    out_dir = args.output_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
     stem = pdf_path.stem
+    out_dir = args.output_dir / stem
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Rendering {pdf_path} at {args.dpi} DPI...")
     image, scale = render_page(str(pdf_path), dpi=args.dpi)
@@ -243,7 +262,12 @@ def main():
     geo_img.save(str(geo_img_path))
     print(f"  Saved: {geo_img_path}")
 
-    geo_md = regions_to_markdown(geo_regions, str(pdf_path))
+    geo_md = regions_to_markdown(
+        geo_regions, str(pdf_path),
+        page_image=image,
+        enable_tables=args.enable_tables,
+        table_mode=args.table_mode,
+    )
     geo_md_path = out_dir / f"{stem}_yolo_geometric.md"
     geo_md_path.write_text(geo_md, encoding="utf-8")
     print(f"  Saved: {geo_md_path}")
@@ -263,7 +287,17 @@ def main():
     page.close()
     doc.close()
 
-    lr_regions = predict_reading_order(lr_model, list(merged), page_width, page_height)
+    columns, spanning = detect_page_columns(list(merged))
+    if len(columns) == 1 and not spanning:
+        lr_regions = predict_reading_order(
+            lr_model, list(merged), page_width, page_height,
+        )
+    else:
+        ordered_cols = [
+            predict_reading_order(lr_model, col, page_width, page_height)
+            for col in columns
+        ]
+        lr_regions = sort_columns_reading_order(ordered_cols, spanning)
     lr_img = draw_regions(
         image, lr_regions, scale,
         f"LayoutReader Order ({len(lr_regions)} regions)",
@@ -272,7 +306,12 @@ def main():
     lr_img.save(str(lr_img_path))
     print(f"  Saved: {lr_img_path}")
 
-    lr_md = regions_to_markdown(lr_regions, str(pdf_path))
+    lr_md = regions_to_markdown(
+        lr_regions, str(pdf_path),
+        page_image=image,
+        enable_tables=args.enable_tables,
+        table_mode=args.table_mode,
+    )
     lr_md_path = out_dir / f"{stem}_yolo_layoutreader.md"
     lr_md_path.write_text(lr_md, encoding="utf-8")
     print(f"  Saved: {lr_md_path}")

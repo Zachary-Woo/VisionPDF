@@ -15,8 +15,9 @@ OmniDocBench/
 # Results
 results/
 
-# Demo Files
-demo/doc*
+# Demo Files (Exclude the visualize_regions.py file)
+demo/
+!demo/visualize_regions.py
 
 # Environment Variables
 .env
@@ -25,3 +26,5 @@ demo/doc*
 debug*
 out.txt
 openrouter_examples/
+old*
+docling_experiments/test*

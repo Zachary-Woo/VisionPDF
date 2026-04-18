@@ -42,10 +42,7 @@ RENDER_DPI = 144  # balance between detail and speed; 72 * 2
 # ---------------------------------------------------------------------------
 # Model identifiers (Hugging Face repos / local paths)
 # ---------------------------------------------------------------------------
-# Trained model checkpoints (created by training scripts)
-# ---------------------------------------------------------------------------
 MODELS_DIR = PROJECT_ROOT / "models"
-SAM_DETECTOR_CHECKPOINT = MODELS_DIR / "sam_doclaynet_head.pt"
 
 # ---------------------------------------------------------------------------
 # YOLO layout detection model (trained on DocLayNet).
@@ -60,11 +57,6 @@ YOLO_MODEL = MODELS_DIR / YOLO_MODEL_FILE
 LAYOUTREADER_MODEL = "hantian/layoutreader"
 
 DEEPSEEK_OCR2_MODEL = "deepseek-ai/DeepSeek-OCR-2"
-
-# ---------------------------------------------------------------------------
-# Dataset paths for training
-# ---------------------------------------------------------------------------
-DOCLAYNET_DIR = PROJECT_ROOT / "DocLayNet"
 
 # ---------------------------------------------------------------------------
 # DocLayNet label map (shared by YOLO-based scripts)
