@@ -51,11 +51,8 @@ python -m benchmark.tier1_text_layer.extract_pypdfium2 --input-dir path/to/your/
 3. Extraction -- Tier 2 (Hybrid: Vision Layout + Text Layer)
 ================================================================================
 
-# YOLO + geometric reading order
-python -m benchmark.tier2_hybrid.yolo.extract_geometric
-
-# YOLO + LayoutReader reading order
-python -m benchmark.tier2_hybrid.yolo.extract_layoutreader
+# YOLO layout detector fed into Docling's assembly pipeline
+python -m benchmark.tier2_hybrid.yolo.extract
 
 # Docling (RT-DETR pipeline)
 python -m benchmark.tier2_hybrid.docling.extract
@@ -88,6 +85,27 @@ python -m benchmark.evaluate.run_eval --results-dir results --gt-json OmniDocBen
 
 # With full OmniDocBench evaluation suite (TEDS + CDM)
 python -m benchmark.evaluate.run_eval --omnidocbench-repo path/to/OmniDocBench-repo
+
+# ----------------------------------------------------------------------
+# Language / text-layer presets
+# ----------------------------------------------------------------------
+# These keep only pages whose GT language matches AND whose source PDF
+# actually has an embedded text layer (>=50 extractable glyphs on
+# page 1, checked via pypdfium2). Output goes to
+#   results\benchmark_results_<filters>.json
+# so it does not overwrite the full-corpus run.
+
+# English pages with a real text layer
+python -m benchmark.evaluate.run_eval --lang english --require-text-layer
+
+# Simplified Chinese pages with a real text layer
+python -m benchmark.evaluate.run_eval --lang simplified_chinese --require-text-layer
+
+# Combined (English + Chinese + mixed) with a real text layer
+python -m benchmark.evaluate.run_eval --lang english simplified_chinese en_ch_mixed --require-text-layer
+
+# Tighten the text-layer threshold (default 50 chars)
+python -m benchmark.evaluate.run_eval --lang english --require-text-layer --min-text-chars 200
 
 ================================================================================
 Execution Order

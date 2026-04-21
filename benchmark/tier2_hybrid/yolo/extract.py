@@ -1,25 +1,30 @@
 """
-Tier 2 -- Docling RT-DETR pipeline (text layer + vision layout).
+Tier 2 -- YOLO layout detection feeding Docling's assembly pipeline.
 
-Uses Docling's StandardPdfPipeline with OCR disabled so that all text
-comes from the native PDF text layer.  Layout detection is handled by
-Docling's built-in RT-DETR "Layout Heron" model (ResNet50, trained on
-DocLayNet), and reading order is predicted by Docling's own
-ReadingOrderModel.
-
-This is the most mature hybrid pipeline in the benchmark and serves as
-the primary Tier 2 baseline.
+This replaces the old hand-rolled geometric / LayoutReader assemblers.
+YOLO detects layout regions (trained on DocLayNet), and Docling takes
+care of everything else: cell assignment, overlap resolution, reading
+order (via its ReadingOrderModel), table structure (via TableFormer),
+and markdown serialisation.
 
 Usage:
-    python -m benchmark.tier2_hybrid.docling.extract [--input-dir path]
-                                                      [--output-dir path]
+    python -m benchmark.tier2_hybrid.yolo.extract [--input-dir path]
+                                                  [--output-dir path]
+                                                  [--overwrite]
 """
 
+from __future__ import annotations
+
 import argparse
+import pathlib
+import platform
 import sys
 from pathlib import Path
 
 from tqdm import tqdm
+
+if platform.system() == "Windows":
+    pathlib.PosixPath = pathlib.WindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
@@ -28,13 +33,14 @@ from benchmark.output import method_output_dir, write_page_markdown, write_summa
 from benchmark.tier2_hybrid.docling_export import markdown_with_html_tables
 from benchmark.timing import append_timing_row, timed
 
-METHOD_NAME = "tier2_docling"
+METHOD_NAME = "tier2_yolo"
 
 
 def build_converter():
     """
-    Build a Docling DocumentConverter configured for text-layer-only
-    extraction with full layout detection and table structure recovery.
+    Build a Docling DocumentConverter whose PDF pipeline uses YOLO
+    for layout detection.  OCR is disabled -- text comes from the
+    embedded PDF text layer.
     """
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import (
@@ -42,6 +48,8 @@ def build_converter():
         TableStructureOptions,
     )
     from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    from benchmark.tier2_hybrid.yolo.pipeline import YoloStandardPdfPipeline
 
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = False
@@ -52,7 +60,10 @@ def build_converter():
 
     converter = DocumentConverter(
         format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+            InputFormat.PDF: PdfFormatOption(
+                pipeline_cls=YoloStandardPdfPipeline,
+                pipeline_options=pipeline_options,
+            ),
         }
     )
     return converter
@@ -67,12 +78,9 @@ def run(input_dir: Path, output_base: Path, overwrite: bool = False):
         print(f"No PDFs found in {input_dir}")
         return
 
-    print("Building Docling converter (RT-DETR layout, no OCR)...")
+    print("Building Docling converter (YOLO layout, no OCR)...")
     converter = build_converter()
 
-    # Resume + per-PDF isolation counters.  Skipped = output already on
-    # disk from a prior run; failed = uncaught exception for that PDF
-    # (logged and swallowed so the batch keeps going).
     processed = 0
     skipped = 0
     failed: list = []
@@ -95,7 +103,9 @@ def run(input_dir: Path, output_base: Path, overwrite: bool = False):
             )
             processed += 1
         except Exception as exc:
-            tqdm.write(f"[{METHOD_NAME}] FAILED {page_id}: {type(exc).__name__}: {exc}")
+            tqdm.write(
+                f"[{METHOD_NAME}] FAILED {page_id}: {type(exc).__name__}: {exc}"
+            )
             failed.append(page_id)
             continue
 
@@ -110,8 +120,10 @@ def run(input_dir: Path, output_base: Path, overwrite: bool = False):
         f"failed={len(failed)} -> {out_dir}"
     )
     if failed:
-        print(f"  failed page_ids ({len(failed)}): {', '.join(failed[:10])}"
-              + (" ..." if len(failed) > 10 else ""))
+        print(
+            f"  failed page_ids ({len(failed)}): {', '.join(failed[:10])}"
+            + (" ..." if len(failed) > 10 else "")
+        )
 
 
 def main():
@@ -119,7 +131,8 @@ def main():
     parser.add_argument("--input-dir", type=Path, default=OMNIDOCBENCH_PDFS)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     parser.add_argument(
-        "--overwrite", action="store_true",
+        "--overwrite",
+        action="store_true",
         help="Re-extract PDFs whose output .md already exists.  Default "
              "is to skip them, which makes the run resumable after an "
              "interruption (just rerun the same command).",

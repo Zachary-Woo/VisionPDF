@@ -54,12 +54,10 @@ YOLO_MODEL_REPO = "hantian/yolo-doclaynet"
 YOLO_MODEL_FILE = "yolo26l-doclaynet.pt"
 YOLO_MODEL = MODELS_DIR / YOLO_MODEL_FILE
 
-LAYOUTREADER_MODEL = "hantian/layoutreader"
-
 DEEPSEEK_OCR2_MODEL = "deepseek-ai/DeepSeek-OCR-2"
 
 # ---------------------------------------------------------------------------
-# DocLayNet label map (shared by YOLO-based scripts)
+# DocLayNet label map (used to decode YOLO class ids into region names).
 # Order matches the hantian/yolo-doclaynet training config.
 # ---------------------------------------------------------------------------
 DOCLAYNET_LABELS = [
@@ -75,29 +73,6 @@ DOCLAYNET_LABELS = [
     "Text",
     "Title",
 ]
-
-# Mapping from DocLayNet labels to markdown formatting helpers.
-LABEL_TO_MD = {
-    "Title": "# ",
-    "Section-header": "## ",
-    "Caption": "*",
-    "Footnote": "> ",
-    "List-item": "- ",
-}
-
-# Labels whose text content should be extracted from the text layer.
-TEXT_LABELS = {
-    "Caption",
-    "Footnote",
-    "Formula",
-    "List-item",
-    "Section-header",
-    "Text",
-    "Title",
-}
-
-# Labels that are non-text regions (skip text extraction).
-NON_TEXT_LABELS = {"Picture", "Page-footer", "Page-header", "Table"}
 
 
 # ---------------------------------------------------------------------------

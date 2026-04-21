@@ -25,21 +25,34 @@ def evaluate_with_llm(gt_text: str, pred_text: str) -> dict:
     if not OPENROUTER_API_KEY:
         raise ValueError("OPENROUTER_API_KEY not found in environment variables.")
 
-    system_prompt = """You are an expert AI evaluator tasked with grading the usability of RAW document text extractions for downstream LLM tasks.
-IMPORTANT CONTEXT: This is the FIRST data extraction step prior to any post-processing. You must evaluate the RAW extraction quality. Do NOT penalize the extraction for lacking perfectly polished Markdown (like `##` for headers or `|---|` for tables). 
+    system_prompt = """You are an expert AI evaluator tasked with grading the usability of RAW document text extractions for downstream LLM tasks. This is part of a published benchmark comparing hybrid PDF-extraction pipelines on digitally generated PDFs whose embedded text layer is treated as the ground truth.
 
-You will be provided with:
-1. GROUND TRUTH TEXT: An annotated representation of the page. Note that the ground truth might use custom tags (like [order=2 | title]) and might omit table bodies or flatten math.
-2. EXTRACTED TEXT: The raw output from the PDF extraction pipeline.
+IMPORTANT CONTEXT: You are judging the FIRST data-extraction step, prior to any post-processing. Evaluate RAW extraction quality. Do NOT penalise the extraction for lacking perfectly polished Markdown (like `##` headers or `|---|` table pipes); structure from blank lines alone is acceptable.
 
-Since the Ground Truth itself might not be perfectly formatted for an LLM (e.g., using custom tags instead of Markdown), a "blind test" of only the extraction is unfair. Therefore, you must evaluate BOTH the Ground Truth and the Extracted Text independently on a 1-5 scale across these four axes:
+Inputs per evaluation:
+1. GROUND TRUTH TEXT: an annotated representation of the page. It may use custom tags such as [order=2 | title] and may omit table bodies or flatten math.
+2. EXTRACTED TEXT: the raw output from the PDF extraction pipeline being judged.
 
-1. Information Completeness (Recall): Does the text capture all the core body text, headings, and metadata? (For the extraction, ignore minor OCR errors or typos).
-2. Reading Order / Flow: Does the text flow logically? If headers/footers are interleaved, do they break the flow of the main paragraphs? (Moving headers/footers to the top or bottom is acceptable).
-3. Structural Boundaries (formerly Formatting): Are the raw textual elements distinct? Focus on whether structural boundaries (like line breaks between paragraphs or sections) exist. Do NOT penalize for lack of Markdown tags. A raw block of text separated by newlines is a perfect 5 if it reflects the document's chunks.
-4. Table/Data Preservation: Is the raw text of the table extracted so that no data is lost? It does NOT need to be a perfectly formatted Markdown/HTML table. If there are no tables in the document, score this a 5.
+A blind test of only the extraction is unfair because the GT itself is often imperfect for LLM consumption. You must therefore score BOTH the Ground Truth and the Extracted Text independently on a 1-5 integer scale on each of the four axes below. TREAT THE AXES AS INDEPENDENT: a pipeline can be strong on prose while failing on tables, or vice versa; do not let one axis drag another.
 
-Provide scores for both the Ground Truth and the Extraction. For each axis, include a justification (1-2 sentences). For any score <= 3, specifically name what is missing, wrong, or broken. Keep justifications concise -- no more than 2 sentences each.
+Scoring axes:
+
+1. Information Completeness (Recall) -- Does the text capture all core body text, headings, captions, and metadata? Ignore minor OCR errors or typos. This is the qualitative companion to the quantitative text-fidelity / block-recovery metrics in the benchmark, so be strict about missing blocks and lenient about cosmetic text changes.
+
+2. Reading Order / Flow -- Does the text flow logically? If headers and footers are interleaved into body paragraphs they break flow and should be penalised; moving headers/footers to the top or bottom of the output is acceptable and should not be penalised.
+
+3. Structural Boundaries -- Are the raw textual elements distinct from each other? Focus on whether blank lines or explicit boundaries separate paragraphs, sections, and blocks. Do NOT penalise lack of Markdown tags: a raw block of text separated by newlines earns a 5 if it reflects the document's chunks.
+
+4. Table / Data Preservation -- Is the tabular data present in a form that preserves row and column content? It does NOT need to be a perfectly formatted Markdown/HTML table; raw space-separated cell text is acceptable so long as no data is lost. If the document contains no tables, score 5 for both GT and prediction on this axis.
+
+For each axis, return:
+  - gt_score (1-5)
+  - pred_score (1-5)
+  - justification: 1-2 sentences. For ANY score <= 3 you MUST name the specific missing, wrong, or broken elements; otherwise the calibration fails.
+
+Finally produce an overall usability score (1-5) for each of GT and prediction plus a short overall justification.
+
+Before providing your first real evaluation, three few-shot calibration examples will be shown covering a strong extraction, a failing extraction, and a mixed extraction where prose is good but table data is lost. Use those scores as the calibration anchor -- apply the same level of strictness.
 """
 
     MAX_INPUT_CHARS = 12000
@@ -92,7 +105,32 @@ Provide scores for both the Ground Truth and the Extraction. For each axis, incl
         "X-Title": "VisionPDF Benchmark"
     }
 
-    example_1_user = """
+    # ------------------------------------------------------------------
+    # Few-shot calibration examples.
+    #
+    # Following the LLM-as-a-judge best practices used in research
+    # evaluations (Zheng et al. 2023; HELM; MT-Bench), we provide three
+    # worked examples that span the main ways an extraction can succeed
+    # or fail:
+    #
+    #   Example 1 (GOOD)  : clean prose extraction -- everything
+    #                        captured, correct order. Calibrates "5/5".
+    #   Example 2 (BAD)   : missing block + inverted reading order.
+    #                        Calibrates strong penalties on
+    #                        information_completeness and reading_order
+    #                        while keeping table_data_preservation at
+    #                        5 because the document has no table body.
+    #   Example 3 (MIXED) : prose is clean but a real data table was
+    #                        collapsed to a "[Table]" placeholder.
+    #                        Forces the judge to keep axes independent
+    #                        -- high on prose axes, low on
+    #                        table_data_preservation -- which is the
+    #                        discrimination pattern real pipelines
+    #                        exhibit when TableFormer is disabled.
+    # ------------------------------------------------------------------
+
+    example_1_user = """EXAMPLE 1 -- GOOD EXTRACTION (calibration target: strong across every axis)
+
 === GROUND TRUTH TEXT ===
 [order=1 | title]
 Introduction
@@ -128,7 +166,8 @@ This is a test document.
         "overall_justification": "The Extraction is a perfect raw capture: all text present, correct order, clean paragraph separation. The GT is slightly less usable due to its custom annotation tags."
     })
 
-    example_2_user = """
+    example_2_user = """EXAMPLE 2 -- BAD EXTRACTION (calibration target: missing block + inverted reading order)
+
 === GROUND TRUTH TEXT ===
 [order=1 | title]
 Results
@@ -167,6 +206,55 @@ Results
         "overall_justification": "The Extraction loses a table caption and inverts the reading order. An LLM reading this would see a body paragraph first with no context, then a floating title. Usable but structurally broken."
     })
 
+    example_3_user = """EXAMPLE 3 -- MIXED EXTRACTION (calibration target: prose fine, table body dropped to placeholder)
+
+=== GROUND TRUTH TEXT ===
+[order=1 | title]
+Experimental Results
+
+[order=2 | table_caption]
+Table 2: Accuracy and latency across methods.
+
+[order=3 | table]
+Method Accuracy Latency
+Baseline 0.72 1.5s
+Ours 0.89 0.8s
+
+[order=4 | text_block]
+Our approach outperforms the baseline while reducing latency.
+
+=== EXTRACTED TEXT ===
+Experimental Results
+
+Table 2: Accuracy and latency across methods.
+
+[Table]
+
+Our approach outperforms the baseline while reducing latency.
+"""
+
+    example_3_assistant = json.dumps({
+        "information_completeness": {
+            "gt_score": 5, "pred_score": 3,
+            "justification": "Title, caption, and body text are all captured in the Extraction, but the entire numeric content of Table 2 is replaced by the literal string '[Table]'. The textual body is complete; the tabular body is lost."
+        },
+        "reading_order": {
+            "gt_score": 5, "pred_score": 5,
+            "justification": "The Extraction preserves title -> caption -> table slot -> body, matching the GT order. The table being a placeholder does not affect where it sits in the reading flow."
+        },
+        "structural_boundaries": {
+            "gt_score": 3, "pred_score": 4,
+            "justification": "The GT uses custom annotation tags. The Extraction uses blank lines between every block so boundaries are clean; one point off because the '[Table]' placeholder gives a downstream LLM no signal about how many rows or columns were present."
+        },
+        "table_data_preservation": {
+            "gt_score": 5, "pred_score": 1,
+            "justification": "The GT preserves the full table rows (Baseline 0.72 1.5s, Ours 0.89 0.8s). The Extraction collapses it to '[Table]', so every numeric datum and every column label is lost. This axis is independent of the prose axes and must be scored accordingly."
+        },
+        "gt_overall_usability_score": 4,
+        "pred_overall_usability_score": 2,
+        "overall_justification": "Illustrates how axes must stay independent: prose handling is strong (completeness 3 only because of the table, reading order 5, boundaries 4), but the table body is entirely absent. A downstream LLM would be able to read the narrative but could not answer any question that requires the numbers, so overall usability drops sharply despite competent text handling."
+    })
+
     payload = {
         "model": MODEL,
         "messages": [
@@ -175,6 +263,8 @@ Results
             {"role": "assistant", "content": example_1_assistant},
             {"role": "user", "content": example_2_user},
             {"role": "assistant", "content": example_2_assistant},
+            {"role": "user", "content": example_3_user},
+            {"role": "assistant", "content": example_3_assistant},
             {"role": "user", "content": user_prompt}
         ],
         "response_format": {
@@ -421,7 +511,7 @@ def run_llm_eval(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate extraction quality using an LLM-as-a-judge via OpenRouter.")
-    parser.add_argument("method_name", type=str, help="Name of the method directory in results/ (e.g., tier2_yolo_layoutreader)")
+    parser.add_argument("method_name", type=str, help="Name of the method directory in results/ (e.g., tier2_yolo)")
     parser.add_argument("--samples", type=int, default=10, help="Number of pages to sample for evaluation")
     parser.add_argument("--results-dir", type=Path, default=OUTPUT_DIR, help="Directory containing per-method output folders")
     parser.add_argument("--gt-json", type=Path, default=OMNIDOCBENCH_JSON, help="Path to OmniDocBench.json ground truth")

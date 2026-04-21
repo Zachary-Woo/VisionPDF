@@ -28,3 +28,4 @@ out.txt
 openrouter_examples/
 old*
 docling_experiments/test*
+benchmark/evaluate/build_comparison.py

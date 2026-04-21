@@ -33,7 +33,68 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from benchmark.config import OMNIDOCBENCH_JSON, OUTPUT_DIR
+from benchmark.config import OMNIDOCBENCH_JSON, OMNIDOCBENCH_PDFS, OUTPUT_DIR
+
+
+# ---------------------------------------------------------------------------
+# PDF text-layer detection
+#
+# The hybrid pipelines we benchmark (docling, YOLO + text layer, ...)
+# assume the PDF has a real, embedded text layer.  When OmniDocBench
+# ships a page whose "ori_pdfs" file is really a wrapped scan (image
+# glued into a PDF with no text objects), every digital pipeline has
+# to fall back to OCR and the comparison becomes unfair.
+#
+# ``has_text_layer`` makes that check explicit: we open the PDF with
+# pypdfium2 and ask the text page how many characters it exposes.
+# Below the threshold we treat the page as "no text layer" and the
+# caller filters it out of the evaluation set.
+# ---------------------------------------------------------------------------
+
+_TEXT_LAYER_CACHE: Dict[str, int] = {}
+
+
+def count_pdf_text_chars(pdf_path: Path) -> int:
+    """
+    Return the number of characters pypdfium2 can extract from the
+    first page of *pdf_path*.
+
+    Returns 0 if the file is missing, unreadable, or produces no
+    characters.  Results are cached by absolute path so repeated
+    lookups in an eval run are cheap.
+    """
+    key = str(pdf_path)
+    if key in _TEXT_LAYER_CACHE:
+        return _TEXT_LAYER_CACHE[key]
+
+    count = 0
+    try:
+        import pypdfium2 as pdfium
+
+        doc = pdfium.PdfDocument(str(pdf_path))
+        try:
+            if len(doc) > 0:
+                page = doc[0]
+                try:
+                    text_page = page.get_textpage()
+                    try:
+                        count = int(text_page.count_chars())
+                    finally:
+                        text_page.close()
+                finally:
+                    page.close()
+        finally:
+            doc.close()
+    except Exception:
+        count = 0
+
+    _TEXT_LAYER_CACHE[key] = count
+    return count
+
+
+def has_text_layer(pdf_path: Path, min_chars: int = 50) -> bool:
+    """True if *pdf_path* exposes at least *min_chars* glyphs."""
+    return count_pdf_text_chars(pdf_path) >= min_chars
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +103,17 @@ from benchmark.config import OMNIDOCBENCH_JSON, OUTPUT_DIR
 
 _HTML_TAG = re.compile(r"<[^>]+>")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# Block-level HTML tags whose boundaries need to be preserved as a
+# space before we strip the rest of the tag soup.  Without this,
+# ``<td>Name</td><td>Type</td>`` normalises to ``NameType`` which is
+# catastrophic for token overlap and edit distance -- the HTML-table
+# methods (YOLO, PaddleOCR) would be punished relative to
+# markdown-pipe-table methods (Docling) even when the cells are identical.
+_HTML_BLOCK_BOUNDARY = re.compile(
+    r"</?(?:td|th|tr|thead|tbody|tfoot|table|p|div|li|ul|ol|"
+    r"h[1-6]|br|caption)\s*/?>",
+    re.IGNORECASE,
+)
 _IMG_PLACEHOLDER = re.compile(r"\[Image\]", re.IGNORECASE)
 _MD_HEADER = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _MD_EMPHASIS = re.compile(r"\*+")
@@ -52,7 +124,7 @@ _MD_CODE_FENCE = re.compile(r"^```[^\n]*$", re.MULTILINE)
 _MD_HRULE = re.compile(r"^[-*_]{3,}\s*$", re.MULTILINE)
 _MD_TABLE_SEP = re.compile(r"^\|?[-:| ]+\|[-:| ]*$", re.MULTILINE)
 _MD_TABLE_PIPE = re.compile(r"\|")
-_LATEX_DISPLAY = re.compile(r"\$\$.*?\$\$", re.DOTALL)
+_LATEX_DISPLAY = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
 _LATEX_INLINE = re.compile(r"\$\s*\^?\{?([^}$]*)\}?\s*\$")
 _SOFT_HYPHEN = re.compile(r"[\u00ad\ufffe\uffff]")
 _WHITESPACE = re.compile(r"\s+")
@@ -69,6 +141,7 @@ def normalize_text(text: str) -> str:
     placeholders, and soft-hyphen / replacement characters.
     """
     text = _HTML_COMMENT.sub("", text)
+    text = _HTML_BLOCK_BOUNDARY.sub(" ", text)
     text = _HTML_TAG.sub("", text)
     text = _IMG_PLACEHOLDER.sub("", text)
     text = _MD_CODE_FENCE.sub("", text)
@@ -80,7 +153,7 @@ def normalize_text(text: str) -> str:
     text = _MD_BLOCKQUOTE.sub("", text)
     text = _MD_LIST.sub("", text)
     text = _MD_LINK.sub(r"\1", text)
-    text = _LATEX_DISPLAY.sub("", text)
+    text = _LATEX_DISPLAY.sub(r"\1", text)
     text = _LATEX_INLINE.sub(r"\1", text)
     text = html.unescape(text)
     text = _SOFT_HYPHEN.sub("", text)
@@ -125,8 +198,25 @@ def load_ground_truth(gt_json_path: Path) -> List[Dict[str, Any]]:
         block_texts: List[str] = []
 
         for det in ordered:
-            raw = det.get("text", "")
-            if not isinstance(raw, str) or not raw.strip():
+            # Prefer the plain-text field when it is populated.  For
+            # tables OmniDocBench stores the ground truth as HTML in a
+            # separate ``html`` field with ``text=""``; for isolated
+            # equations it stores LaTeX in a ``latex`` field with
+            # ``text=""``.  Without this fallback every table (428
+            # blocks) and every isolated equation (353 blocks) would
+            # silently vanish from the eval, both from the whole-page
+            # Text Fidelity metric and from the per-category Block
+            # Recovery breakdown.
+            raw = det.get("text") if isinstance(det.get("text"), str) else ""
+            if not raw.strip():
+                html_raw = det.get("html")
+                if isinstance(html_raw, str) and html_raw.strip():
+                    raw = html_raw
+            if not raw.strip():
+                latex_raw = det.get("latex")
+                if isinstance(latex_raw, str) and latex_raw.strip():
+                    raw = latex_raw
+            if not raw.strip():
                 continue
             norm = normalize_text(raw)
             if not norm:
@@ -331,12 +421,13 @@ def evaluate_method(
     total_recall = 0.0
     total_precision = 0.0
     total_f1 = 0.0
+    total_block_recovery = 0.0
     total_composite = 0.0
     total_pages = 0
 
     by_source: Dict[str, Dict] = defaultdict(
         lambda: {"ed_sum": 0.0, "recall_sum": 0.0, "f1_sum": 0.0,
-                 "composite_sum": 0.0, "count": 0}
+                 "block_sum": 0.0, "composite_sum": 0.0, "count": 0}
     )
     by_category: Dict[str, Dict] = defaultdict(
         lambda: {"ed_sum": 0.0, "count": 0}
@@ -379,6 +470,7 @@ def evaluate_method(
         page_block_sim = (
             1.0 - block_ed_sum / n_blocks if n_blocks > 0 else (1.0 - page_ed)
         )
+        total_block_recovery += page_block_sim
 
         page_composite = (
             COMPOSITE_WEIGHT_ED * (1.0 - page_ed)
@@ -391,6 +483,7 @@ def evaluate_method(
         by_source[src]["ed_sum"] += page_ed
         by_source[src]["recall_sum"] += rec
         by_source[src]["f1_sum"] += f1
+        by_source[src]["block_sum"] += page_block_sim
         by_source[src]["composite_sum"] += page_composite
         by_source[src]["count"] += 1
 
@@ -411,6 +504,7 @@ def evaluate_method(
     avg_recall = total_recall / max(total_pages, 1)
     avg_precision = total_precision / max(total_pages, 1)
     avg_f1 = total_f1 / max(total_pages, 1)
+    avg_block_recovery = total_block_recovery / max(total_pages, 1)
     avg_composite = total_composite / max(total_pages, 1)
     total_time = sum(v for v in timing.values())
     throughput = total_pages / total_time if total_time > 0 else 0.0
@@ -422,6 +516,7 @@ def evaluate_method(
             "accuracy_pct": round((1.0 - acc["ed_sum"] / n) * 100, 2),
             "token_recall_pct": round(acc["recall_sum"] / n * 100, 2),
             "token_f1_pct": round(acc["f1_sum"] / n * 100, 2),
+            "block_recovery_pct": round(acc["block_sum"] / n * 100, 2),
             "composite_pct": round(acc["composite_sum"] / n * 100, 2),
             "pages": acc["count"],
         }
@@ -439,9 +534,11 @@ def evaluate_method(
         "total_pages": total_pages,
         "avg_edit_distance": round(avg_page_ed, 4),
         "text_accuracy_pct": round((1.0 - avg_page_ed) * 100, 2),
+        "text_fidelity_pct": round((1.0 - avg_page_ed) * 100, 2),
         "token_recall_pct": round(avg_recall * 100, 2),
         "token_precision_pct": round(avg_precision * 100, 2),
         "token_f1_pct": round(avg_f1 * 100, 2),
+        "block_recovery_pct": round(avg_block_recovery * 100, 2),
         "composite_pct": round(avg_composite * 100, 2),
         "throughput_pages_per_sec": round(throughput, 2),
         "total_time_seconds": round(total_time, 2),
@@ -463,11 +560,20 @@ def _print_eval_guide() -> None:
     print("How to read the tables below")
     print("-" * 72)
     print(
-        "Edit Dist % = (1 - normalised Levenshtein) on the full page "
-        "(order-sensitive). Token Recall % = fraction of ground-truth "
-        "tokens found in the prediction (order-insensitive). Token F1 % "
-        "= harmonic mean of token precision and recall. Composite % = "
-        f"weighted blend ({COMPOSITE_WEIGHT_ED:.0%} edit-distance "
+        "Two core fields anchor the benchmark. Text Fidelity % = (1 - "
+        "normalised Levenshtein) on the full page after stripping markdown, "
+        "HTML, and LaTeX from both prediction and ground truth -- this is "
+        "the order-sensitive, content-accuracy axis. Block Recovery % = "
+        "average per-block best-match score: for each annotated GT block "
+        "(title, text_block, table, caption...) we find the closest chunk "
+        "in the prediction and compute 1 - edit-distance, independent of "
+        "ordering. Together they capture both 'did the text come out "
+        "correctly' and 'was each semantic unit preserved'."
+    )
+    print(
+        "Token Recall % = fraction of GT tokens recovered in the prediction. "
+        "Token F1 % = harmonic mean of token precision and recall. Composite "
+        f"% is a weighted blend ({COMPOSITE_WEIGHT_ED:.0%} text-fidelity "
         f"+ {COMPOSITE_WEIGHT_TOKEN_F1:.0%} token-F1 "
         f"+ {COMPOSITE_WEIGHT_BLOCK:.0%} block-recovery). "
         "All metrics are higher-is-better."
@@ -499,7 +605,8 @@ def _print_overall_table(all_results: List[Dict[str, Any]]):
         rows.append([
             r["method"],
             r.get("composite_pct", "N/A"),
-            r.get("text_accuracy_pct", "N/A"),
+            r.get("text_fidelity_pct", r.get("text_accuracy_pct", "N/A")),
+            r.get("block_recovery_pct", "N/A"),
             r.get("token_recall_pct", "N/A"),
             r.get("token_f1_pct", "N/A"),
             r.get("throughput_pages_per_sec", "N/A"),
@@ -508,15 +615,18 @@ def _print_overall_table(all_results: List[Dict[str, Any]]):
         ])
     print("\n=== Table 1: Overall ===")
     print(
-        "Caption: Composite % is the headline metric (weighted blend of "
-        "edit-distance similarity, token F1, and block recovery). "
-        "Edit Dist % is order-sensitive full-page Levenshtein similarity. "
-        "Token Recall % and Token F1 % are order-insensitive bag-of-words "
-        "measures showing content completeness."
+        "Caption: Text Fidelity % and Block Recovery % are the two core "
+        "fields. Text Fidelity is order-sensitive whole-page Levenshtein "
+        "similarity after format stripping; Block Recovery is the mean "
+        "best-match score across all GT semantic blocks (title, text_block, "
+        "table, caption ...) and is order-insensitive. Token Recall / F1 "
+        "give bag-of-words completeness. Composite % is the weighted blend "
+        "used for method ranking."
     )
     print(tabulate(
         rows,
-        headers=["Method", "Composite %", "Edit Dist %",
+        headers=["Method", "Composite %",
+                 "Text Fidel %", "Block Rec %",
                  "Tok Recall %", "Tok F1 %",
                  "Pages/sec", "Pages", "Time (s)"],
         tablefmt="grid",
@@ -550,7 +660,11 @@ def _print_source_table(all_results: List[Dict[str, Any]]):
     print("\n=== Table 2: Composite % by document type ===")
     print(
         "Caption: Each cell is the composite score for pages of that "
-        "document type. Columns are OmniDocBench page_attribute.data_source."
+        "document type. Columns are OmniDocBench page_attribute.data_source. "
+        "Use this to spot where a method excels or collapses (e.g. "
+        "academic_literature vs slides vs research papers with heavy "
+        "table/formula content), which matters for claims about how well "
+        "hybrid layout+text-layer pipelines generalise across digital PDFs."
     )
     print(tabulate(rows, headers=headers, tablefmt="grid"))
 
@@ -583,11 +697,14 @@ def _print_category_table(all_results: List[Dict[str, Any]]):
     print(
         "Caption: For each ground-truth layout block (title, text_block, "
         "table_caption, ...), we score the best-matching paragraph in the "
-        "prediction, then average within that category. Good: high scores on "
-        "text_block and title when you care about body copy and headings. Bad: "
-        "very low page_number or header can be noisy (short strings, many "
-        "blocks); large gaps between methods on text_block/title usually "
-        "matter more than small gaps on rare categories."
+        "prediction, then average within that category. The 'table' column "
+        "is the direct TableFormer-quality comparison: when two methods "
+        "both route Table regions through TableFormer (YOLO + Docling), "
+        "any gap there comes from differences in the detected table "
+        "bounding box or the surrounding reading order, not the table "
+        "recognizer itself. Large gaps between methods on text_block / "
+        "title matter more than small gaps on rare categories such as "
+        "page_footnote or page_number (short strings, noisier matches)."
     )
     print(tabulate(rows, headers=headers, tablefmt="grid"))
 
@@ -601,6 +718,10 @@ def run(
     gt_json: Path,
     exclude_sources: Optional[List[str]] = None,
     only_sources: Optional[List[str]] = None,
+    only_langs: Optional[List[str]] = None,
+    require_text_layer: bool = False,
+    min_text_chars: int = 50,
+    pdf_dir: Path = OMNIDOCBENCH_PDFS,
 ):
     print(f"Loading ground truth from {gt_json}...")
     gt_pages = load_ground_truth(gt_json)
@@ -620,6 +741,55 @@ def run(
         ]
         print(f"  Filtered to {len(gt_pages)} pages from: {', '.join(only_sources)}")
 
+    if only_langs:
+        before = len(gt_pages)
+        langs = {lang.lower() for lang in only_langs}
+        gt_pages = [
+            p for p in gt_pages if str(p.get("language", "")).lower() in langs
+        ]
+        print(
+            f"  Language filter keeps {len(gt_pages)} / {before} pages "
+            f"(languages: {', '.join(sorted(langs))})"
+        )
+
+    if require_text_layer:
+        print(
+            f"  Checking text layers in {pdf_dir} "
+            f"(min {min_text_chars} chars per page)..."
+        )
+        kept: List[Dict[str, Any]] = []
+        missing = 0
+        no_text = 0
+        kept_counts: List[int] = []
+        for p in gt_pages:
+            pdf_path = pdf_dir / f"{p['page_id']}.pdf"
+            if not pdf_path.exists():
+                missing += 1
+                continue
+            chars = count_pdf_text_chars(pdf_path)
+            if chars < min_text_chars:
+                no_text += 1
+                continue
+            kept.append(p)
+            kept_counts.append(chars)
+        before = len(gt_pages)
+        gt_pages = kept
+        print(
+            f"  Text-layer filter keeps {len(gt_pages)} / {before} pages "
+            f"(excluded {no_text} below threshold, {missing} missing PDFs)"
+        )
+        if kept_counts:
+            kept_counts.sort()
+            median = kept_counts[len(kept_counts) // 2]
+            print(
+                f"  Glyphs/page among kept: min={min(kept_counts)}, "
+                f"median={median}, max={max(kept_counts)}"
+            )
+
+    if not gt_pages:
+        print("No pages remain after filters. Nothing to evaluate.")
+        return
+
     method_dirs = sorted(
         d for d in results_dir.iterdir()
         if d.is_dir() and (d / "summary.json").exists()
@@ -637,7 +807,8 @@ def run(
 
         print(f"  Pages evaluated:  {result.get('total_pages', 0)}")
         print(f"  Composite:        {result.get('composite_pct', 'N/A')}%")
-        print(f"  Edit distance:    {result.get('text_accuracy_pct', 'N/A')}%")
+        print(f"  Text fidelity:    {result.get('text_fidelity_pct', 'N/A')}%")
+        print(f"  Block recovery:   {result.get('block_recovery_pct', 'N/A')}%")
         print(f"  Token recall:     {result.get('token_recall_pct', 'N/A')}%")
         print(f"  Token F1:         {result.get('token_f1_pct', 'N/A')}%")
         print(f"  Throughput:       {result.get('throughput_pages_per_sec', 'N/A')} pages/sec")
@@ -645,7 +816,16 @@ def run(
     if not all_results:
         return
 
-    summary_path = results_dir / "benchmark_results.json"
+    suffix_parts: List[str] = []
+    if only_langs:
+        suffix_parts.append("lang-" + "+".join(sorted(l.lower() for l in only_langs)))
+    if require_text_layer:
+        suffix_parts.append(f"textlayer{min_text_chars}")
+    if only_sources:
+        suffix_parts.append("src-" + "+".join(sorted(only_sources))[:40])
+    suffix = ("_" + "_".join(suffix_parts)) if suffix_parts else ""
+
+    summary_path = results_dir / f"benchmark_results{suffix}.json"
     out_data = []
     for r in all_results:
         compact = {k: v for k, v in r.items() if k != "page_results"}
@@ -653,7 +833,7 @@ def run(
     summary_path.write_text(json.dumps(out_data, indent=2), encoding="utf-8")
     print(f"\nResults written to {summary_path}")
 
-    detail_path = results_dir / "benchmark_results_detail.json"
+    detail_path = results_dir / f"benchmark_results_detail{suffix}.json"
     detail_path.write_text(json.dumps(all_results, indent=2), encoding="utf-8")
     print(f"Detailed per-page results written to {detail_path}")
 
@@ -689,8 +869,50 @@ def main():
         default=None,
         help="Only evaluate these document types (e.g. academic_literature PPT2PDF)",
     )
+    parser.add_argument(
+        "--lang",
+        nargs="+",
+        default=None,
+        help="Only evaluate pages whose ground-truth language is one of "
+             "these values. OmniDocBench uses 'english', "
+             "'simplified_chinese', and 'en_ch_mixed'.",
+    )
+    parser.add_argument(
+        "--require-text-layer",
+        action="store_true",
+        help="Exclude pages whose source PDF has no (or almost no) "
+             "embedded text layer. We open each PDF with pypdfium2 "
+             "and drop it if it exposes fewer than --min-text-chars "
+             "characters. Use this so the benchmark only measures "
+             "methods on digitally generated PDFs, which is where "
+             "hybrid text-layer pipelines are intended to compete.",
+    )
+    parser.add_argument(
+        "--min-text-chars",
+        type=int,
+        default=50,
+        help="Minimum number of glyphs the source PDF must expose for "
+             "--require-text-layer to keep the page (default: 50). "
+             "Pages below the threshold are treated as scans.",
+    )
+    parser.add_argument(
+        "--pdf-dir",
+        type=Path,
+        default=OMNIDOCBENCH_PDFS,
+        help="Directory of single-page source PDFs used by "
+             "--require-text-layer (default: OmniDocBench/ori_pdfs/).",
+    )
     args = parser.parse_args()
-    run(args.results_dir, args.gt_json, args.exclude_sources, args.only_sources)
+    run(
+        args.results_dir,
+        args.gt_json,
+        args.exclude_sources,
+        args.only_sources,
+        only_langs=args.lang,
+        require_text_layer=args.require_text_layer,
+        min_text_chars=args.min_text_chars,
+        pdf_dir=args.pdf_dir,
+    )
 
 
 if __name__ == "__main__":

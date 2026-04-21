@@ -45,16 +45,17 @@ Structural ordering = whatever PDF token stream produces.
 | **pypdfium2** | `tier1_text_layer/extract_pypdfium2.py` | PDFium text API. Raw token stream. |
 | **PyMuPDF** | `tier1_text_layer/extract_pymupdf.py` | MuPDF engine. Two modes: `raw` (plain text) and `markdown` (pymupdf4llm structural recovery). |
 
-### Tier 2 -- Hybrid Reconstruction (Detector + Reading Order)
+### Tier 2 -- Hybrid Reconstruction (Detector + Docling Assembly)
 
-Vision model detects layout regions. Text extracted from native PDF layer within each region.
-Reading order determined by geometric heuristics or learned models.
+Vision model detects layout regions. Docling handles cell assignment,
+reading order, table structure (TableFormer), and markdown serialisation
+downstream. The only axis of variation is which layout detector feeds
+Docling's pipeline.
 
-| Method | Script | Detection | Reading Order |
-|--------|--------|-----------|---------------|
-| **YOLO + Geometric** | `tier2_hybrid/yolo/extract_geometric.py` | YOLO (DocLayNet) | Top-to-bottom, left-to-right |
-| **YOLO + LayoutReader** | `tier2_hybrid/yolo/extract_layoutreader.py` | YOLO (DocLayNet) | LayoutReader (LayoutLMv3) |
-| **Docling RT-DETR** | `tier2_hybrid/docling/extract.py` | RT-DETR "Layout Heron" (DocLayNet) | Docling built-in ReadingOrderModel |
+| Method | Script | Detection | Assembly |
+|--------|--------|-----------|----------|
+| **YOLO + Docling** | `tier2_hybrid/yolo/extract.py` | YOLO (DocLayNet) | Docling (ReadingOrderModel + TableFormer) |
+| **Docling RT-DETR** | `tier2_hybrid/docling/extract.py` | RT-DETR "Layout Heron" (DocLayNet) | Docling (ReadingOrderModel + TableFormer) |
 
 ### Tier 3 -- Full OCR / VLM
 
@@ -84,13 +85,13 @@ benchmark/
         extract_pymupdf.py              PyMuPDF raw/markdown extraction
 
     tier2_hybrid/
-        shared.py                       Region class, geometric sort, text extraction,
-                                        markdown reconstruction, LayoutReader helpers
+        docling_export.py               Markdown serialiser (HTML tables) used by both detectors
         yolo/
-            extract_geometric.py        YOLO + geometric sort
-            extract_layoutreader.py     YOLO + LayoutReader
+            yolo_layout_model.py        YOLO detector wrapped as a Docling BaseLayoutModel
+            pipeline.py                 LegacyStandardPdfPipeline subclass using YoloLayoutModel
+            extract.py                  Entry point: YOLO layout + Docling assembly
         docling/
-            extract.py                  Docling RT-DETR pipeline
+            extract.py                  Entry point: RT-DETR layout + Docling assembly
 
     tier3_ocr/
         extract_deepseek_ocr2.py        DeepSeek OCR 2 full VLM
@@ -122,9 +123,10 @@ Place in project root. Path configured in `config.py` as `OMNIDOCBENCH_DIR`.
 
 ### DocLayNet (taxonomy)
 
-Public 11-class document layout taxonomy. Pre-trained YOLO DocLayNet weights
-use this label set; see `benchmark/config.py` for the class list and markdown
-prefix mapping.
+Public 11-class document layout taxonomy. Pre-trained YOLO DocLayNet
+weights use this label set; `benchmark/config.py` holds the class list,
+and `yolo_layout_model.py` maps each DocLayNet label to the
+corresponding `DocItemLabel` that Docling reasons about.
 
 ---
 
@@ -205,11 +207,10 @@ python -m benchmark.tier1_text_layer.extract_pymupdf --mode markdown
 ### Tier 2
 
 ```bash
-# YOLO-based
-python -m benchmark.tier2_hybrid.yolo.extract_geometric
-python -m benchmark.tier2_hybrid.yolo.extract_layoutreader
+# YOLO layout detector fed into Docling's assembly pipeline
+python -m benchmark.tier2_hybrid.yolo.extract
 
-# Docling
+# Docling (built-in RT-DETR layout)
 python -m benchmark.tier2_hybrid.docling.extract
 ```
 
@@ -268,14 +269,10 @@ results/
         summary.json          Method metadata
 ```
 
-Markdown formatting guided by DocLayNet labels:
-- Title -> `# `
-- Section-header -> `## `
-- Caption -> `*...*`
-- Footnote -> `> `
-- List-item -> `- `
-- Picture -> `[Image]`
-- Table -> raw text content
+For Tier 2 methods (`tier2_yolo`, `tier2_docling`) markdown is produced
+by Docling's `export_to_markdown`, with table blocks rewritten to HTML
+so table syntax matches OmniDocBench ground truth. Other tiers use
+their own serialisers.
 
 ---
 
@@ -289,7 +286,6 @@ All paths and model IDs centralized in `benchmark/config.py`:
 | `OUTPUT_DIR` | `PROJECT_ROOT/results` | Extraction output |
 | `RENDER_DPI` | 144 | PDF render resolution (72 * 2) |
 | `YOLO_MODEL` | `hantian/yolo-doclaynet` | YOLO weights (HF repo) |
-| `LAYOUTREADER_MODEL` | `hantian/layoutreader` | LayoutReader weights |
 | `DEEPSEEK_OCR2_MODEL` | `deepseek-ai/DeepSeek-OCR-2` | DeepSeek OCR 2 weights |
 | `MODELS_DIR` | `PROJECT_ROOT/models` | Local model checkpoints (e.g. YOLO `.pt`) |
 
