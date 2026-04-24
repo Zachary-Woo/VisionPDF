@@ -58,7 +58,7 @@ def _decode_image(image_data: Union[str, bytes]) -> Image.Image:
 
 
 def _parse_anno_string(
-    anno_string: str, image_w: int, image_h: int
+    anno_string, image_w: int, image_h: int
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Parse a DocSynth-style anno_string into (boxes, class_ids).
@@ -69,7 +69,17 @@ def _parse_anno_string(
     Coordinates are normalised to [0, 1].  We produce the axis-
     aligned bbox by taking min/max over the four polygon corners and
     then multiplying by the image resolution.
+
+    The DocSynth300K parquet stores this column as a ``list<string>``
+    (one element per region), but some older dumps flatten it into a
+    single space-joined string.  Both shapes are accepted.
     """
+    if anno_string is None:
+        return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.int64)
+
+    if isinstance(anno_string, (list, tuple, np.ndarray)):
+        anno_string = " ".join(str(s) for s in anno_string if s is not None)
+
     if not anno_string or anno_string.isspace():
         return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.int64)
 
