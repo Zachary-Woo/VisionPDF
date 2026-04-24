@@ -127,22 +127,91 @@ _IIITAR_NAME_TO_DOCDET: Dict[str, Optional[int]] = {
     "signature": canonical_id("Picture"),
 }
 
-# DocSynth300K exposes integer category IDs inside the anno_string.
-# The dataset README documents these IDs (see
-# https://huggingface.co/datasets/juliozhao/DocSynth300K).  Unknown
-# IDs are dropped; callers should log them via the warning path.
+# DocSynth300K uses the M6Doc 74-class taxonomy (its element pool was
+# fragmented from M6Doc test images - see DocLayout-YOLO arxiv:2410.12628
+# section 3.1).  Official ID -> name table:
+#   doclayout_yolo/cfg/datasets/docsynth300k.yaml lines 17-91.
+#
+# We map each M6Doc category to the nearest DocDet class and drop
+# categories that have no reasonable DocDet analogue (None) so the
+# DocSynth300K pretraining signal aligns with the downstream 11-class
+# head.  Without this remap, ~99% of the 300K samples' boxes would be
+# silently discarded and Phase 1 would degenerate into noise.
 _DOCSYNTH_ID_TO_DOCDET: Dict[int, Optional[int]] = {
-    0: canonical_id("Title"),
-    1: canonical_id("Text"),
-    2: canonical_id("List-item"),
-    3: canonical_id("Table"),
-    4: canonical_id("Picture"),
-    5: canonical_id("Formula"),
-    6: canonical_id("Caption"),
-    7: canonical_id("Page-header"),
-    8: canonical_id("Page-footer"),
-    9: canonical_id("Footnote"),
-    10: canonical_id("Section-header"),
+    0:  None,                              # QR code
+    1:  None,                              # advertisement
+    2:  None,                              # algorithm
+    3:  None,                              # answer (test-paper only)
+    4:  canonical_id("Text"),              # author
+    5:  None,                              # barcode
+    6:  None,                              # bill
+    7:  None,                              # blank
+    8:  None,                              # bracket
+    9:  None,                              # breakout (magazine pull-quote)
+    10: canonical_id("Text"),              # byline
+    11: canonical_id("Caption"),           # caption
+    12: canonical_id("List-item"),         # catalogue
+    13: canonical_id("Section-header"),    # chapter title
+    14: canonical_id("Text"),              # code
+    15: None,                              # correction
+    16: canonical_id("Text"),              # credit
+    17: canonical_id("Text"),              # dateline
+    18: None,                              # drop cap (decorative)
+    19: canonical_id("Text"),              # editor's note
+    20: canonical_id("Footnote"),          # endnote
+    21: canonical_id("Text"),              # examinee information
+    22: canonical_id("Section-header"),    # fifth-level title
+    23: canonical_id("Picture"),           # figure
+    24: canonical_id("Text"),              # first-level question number
+    25: canonical_id("Title"),             # first-level title
+    26: None,                              # flag (newspaper masthead)
+    27: canonical_id("Page-footer"),       # folio
+    28: canonical_id("Page-footer"),       # footer
+    29: canonical_id("Footnote"),          # footnote
+    30: canonical_id("Formula"),           # formula
+    31: canonical_id("Section-header"),    # fourth-level section title
+    32: canonical_id("Section-header"),    # fourth-level title
+    33: canonical_id("Page-header"),       # header
+    34: canonical_id("Title"),             # headline
+    35: canonical_id("List-item"),         # index
+    36: None,                              # inside (ambiguous)
+    37: canonical_id("Text"),              # institute
+    38: canonical_id("Text"),              # jump line
+    39: canonical_id("Text"),              # kicker
+    40: canonical_id("Text"),              # lead
+    41: canonical_id("Footnote"),          # marginal note
+    42: None,                              # matching (test-paper only)
+    43: canonical_id("Picture"),           # mugshot
+    44: canonical_id("List-item"),         # option (multiple-choice)
+    45: canonical_id("List-item"),         # ordered list
+    46: canonical_id("Text"),              # other question number
+    47: canonical_id("Page-footer"),       # page number
+    48: canonical_id("Text"),              # paragraph
+    49: canonical_id("Section-header"),    # part
+    50: canonical_id("Text"),              # play
+    51: canonical_id("Text"),              # poem
+    52: canonical_id("Text"),              # reference
+    53: None,                              # sealing line (test-paper only)
+    54: canonical_id("Text"),              # second-level question number
+    55: canonical_id("Section-header"),    # second-level title
+    56: canonical_id("Section-header"),    # section
+    57: canonical_id("Section-header"),    # section title
+    58: canonical_id("Text"),              # sidebar
+    59: canonical_id("Section-header"),    # sub section title
+    60: canonical_id("Section-header"),    # subhead
+    61: canonical_id("Section-header"),    # subsub section title
+    62: canonical_id("Footnote"),          # supplementary note
+    63: canonical_id("Table"),             # table
+    64: canonical_id("Caption"),           # table caption
+    65: canonical_id("Footnote"),          # table note
+    66: canonical_id("Text"),              # teasers
+    67: canonical_id("Text"),              # third-level question number
+    68: canonical_id("Section-header"),    # third-level title
+    69: canonical_id("Title"),             # title
+    70: canonical_id("Text"),              # translator
+    71: None,                              # underscore (formatting)
+    72: canonical_id("List-item"),         # unordered list
+    73: None,                              # weather forecast
 }
 
 # OmniDocBench uses free-form string category_type strings.
