@@ -1,0 +1,31 @@
+# Core deep learning
+torch>=2.2,<3.0
+torchvision>=0.17,<1.0
+
+# Numerics and image I/O
+numpy>=1.26
+Pillow>=10.0
+
+# DocSynth300K parquet loading and HF Hub streaming
+pyarrow>=14.0
+huggingface-hub>=0.23
+datasets>=2.19
+
+# Evaluation metrics (COCO-style mAP on OmniDocBench)
+pycocotools>=2.0.7
+
+# ONNX export + INT8 static quantization for edge deployment
+onnx>=1.16
+onnxruntime>=1.17
+
+# Training loop logging
+tensorboard>=2.15
+
+# Optional - CLI detection visualisation
+matplotlib>=3.8
+
+# Optional - IIIT-AR-13K via Kaggle API (skip if not used)
+# kaggle>=1.6
+
+# Development / testing
+pytest>=8.0

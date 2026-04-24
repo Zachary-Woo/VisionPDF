@@ -12,6 +12,11 @@ models/
 DocLayNet/
 OmniDocBench/
 
+# Layout detector trained weights and downloaded data caches
+layout_detector/weights/
+layout_detector/data_cache/
+layout_detector/notebooks/.ipynb_checkpoints/
+
 # Results
 results/
 

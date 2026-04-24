@@ -54,6 +54,21 @@ YOLO_MODEL_REPO = "hantian/yolo-doclaynet"
 YOLO_MODEL_FILE = "yolo26l-doclaynet.pt"
 YOLO_MODEL = MODELS_DIR / YOLO_MODEL_FILE
 
+# ---------------------------------------------------------------------------
+# DocDet layout detection model (license-clean, trained in-house).
+# Lives under ``layout_detector/weights`` rather than ``models`` so
+# training artefacts from ``layout_detector/docdet/train/*.py`` land
+# in the same place the benchmark reads from.  The default filename
+# mirrors the Phase 2 checkpoint name emitted by the trainer.
+# ---------------------------------------------------------------------------
+DOCDET_WEIGHTS_DIR = PROJECT_ROOT / "layout_detector" / "weights"
+DOCDET_MODEL_FILE = "docdet.pt"
+DOCDET_MODEL = DOCDET_WEIGHTS_DIR / DOCDET_MODEL_FILE
+DOCDET_ONNX_FILE = "docdet.onnx"
+DOCDET_ONNX = DOCDET_WEIGHTS_DIR / DOCDET_ONNX_FILE
+DOCDET_INT8_FILE = "docdet_int8.onnx"
+DOCDET_INT8 = DOCDET_WEIGHTS_DIR / DOCDET_INT8_FILE
+
 DEEPSEEK_OCR2_MODEL = "deepseek-ai/DeepSeek-OCR-2"
 
 # ---------------------------------------------------------------------------
