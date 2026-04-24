@@ -143,7 +143,7 @@ class Trainer:
         )
 
         self.use_amp = config.use_amp and self.device.type == "cuda"
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
 
         self.global_step = 0
         self.epoch = 0
@@ -234,7 +234,7 @@ class Trainer:
 
         self.optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=self.use_amp):
+        with torch.amp.autocast("cuda", enabled=self.use_amp):
             outputs = self.model(images)
             loss, stats = self.criterion(outputs, targets_per_image)
 

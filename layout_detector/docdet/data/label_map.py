@@ -260,6 +260,43 @@ def _log_unknown_once(source: str, raw: Union[str, int]) -> None:
         )
 
 
+def _is_known(source: str, raw: Union[str, int]) -> bool:
+    """Return True if ``raw`` is present in the source's mapping table.
+
+    Used to distinguish intentional drops (key present, value None) from
+    truly unknown categories (key missing) so logging can stay quiet on
+    the former.
+    """
+    source = source.lower()
+    if source == "doclaynet":
+        if isinstance(raw, str):
+            return raw in _NAME_TO_ID
+        return int(raw) in _DOCLAYNET_ID_TO_DOCDET
+    if source == "publaynet":
+        if isinstance(raw, int):
+            return 1 <= int(raw) <= 5
+        return str(raw).lower() in _PUBLAYNET_NAME_TO_DOCDET
+    if source == "docbank":
+        if isinstance(raw, int):
+            return 0 <= int(raw) < len(_DOCBANK_NAME_TO_DOCDET)
+        return str(raw).lower() in _DOCBANK_NAME_TO_DOCDET
+    if source == "tablebank":
+        if isinstance(raw, int):
+            return True
+        return str(raw).lower() in _TABLEBANK_NAME_TO_DOCDET
+    if source == "iiit_ar":
+        if isinstance(raw, int):
+            return 0 <= int(raw) < len(_IIITAR_NAME_TO_DOCDET)
+        return str(raw).lower() in _IIITAR_NAME_TO_DOCDET
+    if source == "docsynth":
+        return int(raw) in _DOCSYNTH_ID_TO_DOCDET
+    if source == "omnidocbench":
+        if isinstance(raw, int):
+            return 0 <= int(raw) < len(_OMNIDOCBENCH_NAME_TO_DOCDET)
+        return str(raw).lower() in _OMNIDOCBENCH_NAME_TO_DOCDET
+    return False
+
+
 def map_class(source: str, raw: Union[str, int]) -> Optional[int]:
     """
     Map a raw category (ID or name) from ``source`` to a DocDet ID.
@@ -335,8 +372,14 @@ def map_class(source: str, raw: Union[str, int]) -> Optional[int]:
 
 
 def map_class_with_logging(source: str, raw: Union[str, int]) -> Optional[int]:
-    """Same as ``map_class`` but logs unknown categories once."""
+    """Same as ``map_class`` but logs truly-unknown categories once.
+
+    Categories that are present in the source's mapping table but
+    intentionally set to ``None`` (e.g. DocSynth's QR codes, drop caps,
+    exam-paper artifacts) are silently dropped without a warning, since
+    those drops are deliberate design choices rather than missing data.
+    """
     result = map_class(source, raw)
-    if result is None:
+    if result is None and not _is_known(source, raw):
         _log_unknown_once(source, raw)
     return result
