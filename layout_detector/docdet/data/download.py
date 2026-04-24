@@ -101,22 +101,29 @@ DOCLAYNET_REPO = "docling-project/DocLayNet-v1.2"
 
 
 def ensure_doclaynet(cache_root: Optional[Path] = None) -> Path:
-    """Download DocLayNet-v1.2 if not already present at the root."""
+    """Download DocLayNet-v1.2 train parquet shards to the cache.
+
+    Only the ``train-*.parquet`` shards are pulled (val/test are kept
+    on the Hub) to minimise Colab disk usage.  Returns the dataset
+    root containing a ``data/`` sub-directory the parquet loader
+    discovers automatically.
+    """
     local_fallback = _PROJECT_ROOT / "DocLayNet"
     if local_fallback.exists() and any(local_fallback.rglob("*.json")):
         return local_fallback
 
     root = _resolve_cache_root(cache_root) / "doclaynet"
-    if _already_populated(root, patterns=("*.json", "*.png", "*.parquet")):
+    if _already_populated(root, patterns=("*.parquet",)):
         return root
 
     from huggingface_hub import snapshot_download
 
-    logger.info("Downloading DocLayNet to %s ...", root)
+    logger.info("Downloading DocLayNet (train parquets) to %s ...", root)
     snapshot_download(
         repo_id=DOCLAYNET_REPO,
         repo_type="dataset",
         local_dir=str(root),
+        allow_patterns=["data/train-*.parquet", "*.json"],
     )
     logger.info("DocLayNet ready at %s", root)
     return root
@@ -137,18 +144,19 @@ PUBLAYNET_REPO = "jordanparker6/publaynet"
 
 
 def ensure_publaynet(cache_root: Optional[Path] = None) -> Path:
-    """Download PubLayNet to the cache."""
+    """Download PubLayNet train parquet shards to the cache."""
     root = _resolve_cache_root(cache_root) / "publaynet"
-    if _already_populated(root, patterns=("*.json", "*.tar", "*.png")):
+    if _already_populated(root, patterns=("*.parquet",)):
         return root
 
     from huggingface_hub import snapshot_download
 
-    logger.info("Downloading PubLayNet to %s ...", root)
+    logger.info("Downloading PubLayNet (train parquets) to %s ...", root)
     snapshot_download(
         repo_id=PUBLAYNET_REPO,
         repo_type="dataset",
         local_dir=str(root),
+        allow_patterns=["data/train-*.parquet", "*.json"],
     )
     return root
 
@@ -161,56 +169,26 @@ def cleanup_publaynet(cache_root: Optional[Path] = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DocBank (Phase 2)
-# ---------------------------------------------------------------------------
-
-DOCBANK_REPO = "maveriq/DocBank"
-
-
-def ensure_docbank(cache_root: Optional[Path] = None) -> Path:
-    """Download DocBank to the cache."""
-    root = _resolve_cache_root(cache_root) / "docbank"
-    if _already_populated(root):
-        return root
-
-    from huggingface_hub import snapshot_download
-
-    logger.info("Downloading DocBank to %s ...", root)
-    snapshot_download(
-        repo_id=DOCBANK_REPO,
-        repo_type="dataset",
-        local_dir=str(root),
-    )
-    return root
-
-
-def cleanup_docbank(cache_root: Optional[Path] = None) -> None:
-    """Remove the DocBank cache."""
-    root = _resolve_cache_root(cache_root) / "docbank"
-    if root.exists():
-        shutil.rmtree(root, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-# TableBank (Phase 2)
+# TableBank-Detection (Phase 2)
 # ---------------------------------------------------------------------------
 
 TABLEBANK_REPO = "deepcopy/TableBank-Detection"
 
 
 def ensure_tablebank(cache_root: Optional[Path] = None) -> Path:
-    """Download TableBank to the cache."""
+    """Download TableBank-Detection train parquets to the cache."""
     root = _resolve_cache_root(cache_root) / "tablebank"
-    if _already_populated(root):
+    if _already_populated(root, patterns=("*.parquet",)):
         return root
 
     from huggingface_hub import snapshot_download
 
-    logger.info("Downloading TableBank to %s ...", root)
+    logger.info("Downloading TableBank (train parquets) to %s ...", root)
     snapshot_download(
         repo_id=TABLEBANK_REPO,
         repo_type="dataset",
         local_dir=str(root),
+        allow_patterns=["data/train-*.parquet", "*.json"],
     )
     return root
 
@@ -231,41 +209,47 @@ IIIT_AR_KAGGLE_SLUG = "gabrieletazza/iiitar13k"
 
 def ensure_iiit_ar(cache_root: Optional[Path] = None) -> Path:
     """
-    Download IIIT-AR-13K from Kaggle.
+    Download IIIT-AR-13K from Kaggle via ``kagglehub``.
 
-    Requires ``kaggle.json`` credentials either at
-    ``~/.kaggle/kaggle.json`` or via environment variables
-    ``KAGGLE_USERNAME`` + ``KAGGLE_KEY``.  The kaggle CLI is
-    imported lazily so DocDet does not force a kaggle dependency
-    for users who skip IIIT-AR.
+    ``kagglehub.dataset_download`` returns a local cache path with the
+    archive already extracted.  We mirror its contents into the DocDet
+    cache so cleanup remains uniform across datasets.
+
+    Authentication: ``kagglehub`` reads either the standard
+    ``~/.kaggle/kaggle.json`` file or the ``KAGGLE_USERNAME`` /
+    ``KAGGLE_KEY`` env vars.  In Colab, ``kagglehub.login()`` opens an
+    interactive prompt the first time it is called.
     """
     root = _resolve_cache_root(cache_root) / "iiit_ar"
-    if _already_populated(root):
+    if _already_populated(root, patterns=("*.xml", "*.jpg", "*.png")):
         return root
 
     try:
-        from kaggle import api as kaggle_api
+        import kagglehub
     except ImportError as e:
         raise ImportError(
-            "IIIT-AR-13K requires the 'kaggle' pip package. "
-            "Install via `pip install kaggle` and configure "
-            "credentials at ~/.kaggle/kaggle.json."
+            "IIIT-AR-13K requires the 'kagglehub' pip package. "
+            "Install via `pip install kagglehub`."
         ) from e
 
-    if not os.environ.get("KAGGLE_USERNAME") and not (
-        Path.home() / ".kaggle" / "kaggle.json"
-    ).exists():
-        raise RuntimeError(
-            "Kaggle credentials not configured. Place kaggle.json in "
-            "~/.kaggle/ or set KAGGLE_USERNAME / KAGGLE_KEY env vars."
-        )
+    logger.info("Downloading IIIT-AR-13K via kagglehub ...")
+    src_dir = Path(kagglehub.dataset_download(IIIT_AR_KAGGLE_SLUG))
 
     root.mkdir(parents=True, exist_ok=True)
-    logger.info("Downloading IIIT-AR-13K from Kaggle to %s ...", root)
-    kaggle_api.authenticate()
-    kaggle_api.dataset_download_files(
-        IIIT_AR_KAGGLE_SLUG, path=str(root), unzip=True,
-    )
+    # Move (rather than copy) into our cache so cleanup_iiit_ar fully
+    # frees disk; fall back to copy if cross-device move is rejected.
+    for child in src_dir.iterdir():
+        target = root / child.name
+        if target.exists():
+            continue
+        try:
+            shutil.move(str(child), str(target))
+        except OSError:
+            if child.is_dir():
+                shutil.copytree(child, target)
+            else:
+                shutil.copy2(child, target)
+    logger.info("IIIT-AR-13K ready at %s", root)
     return root
 
 

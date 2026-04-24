@@ -24,8 +24,8 @@ tensorboard>=2.15
 # Optional - CLI detection visualisation
 matplotlib>=3.8
 
-# Optional - IIIT-AR-13K via Kaggle API (skip if not used)
-# kaggle>=1.6
+# IIIT-AR-13K via Kaggle (kagglehub auto-handles auth + extraction)
+kagglehub>=0.3
 
 # Development / testing
 pytest>=8.0

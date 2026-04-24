@@ -2,15 +2,21 @@
 Phase 2: multi-dataset real-document fine-tuning.
 
 Runs ~15 epochs with the backbone fully unfrozen, sampling from a
-weighted mixture of DocLayNet / PubLayNet / DocBank / TableBank /
-IIIT-AR-13K (spec 6.2).  Picks up the Phase 1 checkpoint if
-provided, otherwise starts from the ImageNet-only backbone + a
-freshly initialised head.
+weighted mixture of DocLayNet / PubLayNet / TableBank / IIIT-AR-13K
+(spec 6.2).  Picks up the Phase 1 checkpoint if provided, otherwise
+starts from the ImageNet-only backbone + a freshly initialised head.
+
+Each dataset has its own native on-disk format, so this script
+dispatches to the matching loader rather than forcing a COCO-JSON
+intermediate:
+
+    DocLayNet, PubLayNet, TableBank   ->  ParquetDetectionSource
+    IIIT-AR-13K                       ->  IIITARVocSource
+    (legacy COCO-JSON, any source)    ->  CocoSource
 
 Only the datasets actually present on disk are registered in the
-mixture; missing datasets are logged and skipped so users without
-Kaggle credentials or 500 GB of free space can still run the phase
-with whatever subset they have.
+mixture; missing ones are logged and skipped so users with a partial
+download can still run the phase.
 """
 
 from __future__ import annotations
@@ -18,13 +24,15 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from ..data.coco_source import CocoSource, docdet_collate
+from ..data.iiitar_source import IIITARVocSource
 from ..data.label_map import NUM_DOCDET_CLASSES
+from ..data.parquet_source import ParquetDetectionSource
 from ..data.weighted_sampler import MultiSourceDataset
 from ..model.loss import DocDetLoss
 from ..model.model import DocDet
@@ -34,79 +42,126 @@ from .trainer import Trainer
 logger = logging.getLogger(__name__)
 
 
-def _try_build_coco_source(
+# ---------------------------------------------------------------------------
+# Per-source dataset factories
+# ---------------------------------------------------------------------------
+
+def _build_parquet_source(
     name: str,
-    annotation_file: Optional[Path],
-    image_root: Optional[Path],
+    root: Optional[Path],
+    ann_file: Optional[Path],
+    img_root: Optional[Path],
     train: bool,
-) -> Optional[CocoSource]:
-    """Build a CocoSource or return None (with a warning) if paths are missing."""
-    if annotation_file is None or image_root is None:
-        logger.warning("Skipping %s: paths not provided", name)
-        return None
-    if not Path(annotation_file).exists():
-        logger.warning(
-            "Skipping %s: annotation file not found at %s",
-            name, annotation_file,
+) -> Optional[Dataset]:
+    """Return a Parquet- or COCO-backed source, whichever paths are given."""
+    if root is not None and Path(root).exists():
+        try:
+            ds = ParquetDetectionSource(parquet_files=root, source_name=name)
+            logger.info("%s (parquet): %d samples from %s", name, len(ds), root)
+            return ds
+        except Exception as e:
+            logger.warning("%s parquet load failed (%s); trying COCO fallback", name, e)
+
+    if ann_file and img_root and Path(ann_file).exists() and Path(img_root).exists():
+        ds = CocoSource(
+            annotation_file=ann_file,
+            image_root=img_root,
+            source_name=name,
+            train=train,
         )
-        return None
-    if not Path(image_root).exists():
-        logger.warning(
-            "Skipping %s: image root not found at %s", name, image_root,
+        logger.info("%s (coco): %d images from %s", name, len(ds), img_root)
+        return ds
+
+    logger.warning("Skipping %s: no usable parquet root or COCO paths provided", name)
+    return None
+
+
+def _build_iiit_ar_source(
+    root: Optional[Path],
+    ann_file: Optional[Path],
+    img_root: Optional[Path],
+    train: bool,
+) -> Optional[Dataset]:
+    """IIIT-AR-13K loader: VOC XML by default, COCO if --iiit-ar-annotations is given."""
+    if root is not None and Path(root).exists():
+        try:
+            ds = IIITARVocSource(root=root, split="train" if train else "val")
+            logger.info("iiit_ar (voc): %d images from %s", len(ds), root)
+            return ds
+        except Exception as e:
+            logger.warning("iiit_ar VOC load failed (%s); trying COCO fallback", e)
+
+    if ann_file and img_root and Path(ann_file).exists() and Path(img_root).exists():
+        ds = CocoSource(
+            annotation_file=ann_file,
+            image_root=img_root,
+            source_name="iiit_ar",
+            train=train,
         )
-        return None
-    return CocoSource(
-        annotation_file=annotation_file,
-        image_root=image_root,
-        source_name=name,
-        train=train,
-    )
+        logger.info("iiit_ar (coco): %d images from %s", len(ds), img_root)
+        return ds
+
+    logger.warning("Skipping iiit_ar: no usable VOC root or COCO paths provided")
+    return None
 
 
 def _build_mixture(args) -> Tuple[MultiSourceDataset, List[str]]:
     """Assemble the weighted MultiSourceDataset from whatever is available."""
-    candidates = {
-        "doclaynet": (args.doclaynet_annotations, args.doclaynet_images),
-        "publaynet": (args.publaynet_annotations, args.publaynet_images),
-        "docbank": (args.docbank_annotations, args.docbank_images),
-        "tablebank": (args.tablebank_annotations, args.tablebank_images),
-        "iiit_ar": (args.iiit_ar_annotations, args.iiit_ar_images),
-    }
-
     sources = {}
-    for name, (ann, imgs) in candidates.items():
-        src = _try_build_coco_source(name, ann, imgs, train=True)
-        if src is not None:
-            sources[name] = src
-            logger.info("%s ready with %d images", name, len(src))
+
+    for name, root, ann, imgs in [
+        ("doclaynet", args.doclaynet_root, args.doclaynet_annotations, args.doclaynet_images),
+        ("publaynet", args.publaynet_root, args.publaynet_annotations, args.publaynet_images),
+        ("tablebank", args.tablebank_root, args.tablebank_annotations, args.tablebank_images),
+    ]:
+        ds = _build_parquet_source(name, root, ann, imgs, train=True)
+        if ds is not None:
+            sources[name] = ds
+
+    iiit = _build_iiit_ar_source(
+        args.iiit_ar_root, args.iiit_ar_annotations, args.iiit_ar_images, train=True,
+    )
+    if iiit is not None:
+        sources["iiit_ar"] = iiit
 
     if not sources:
         raise RuntimeError(
-            "Phase 2 requires at least one dataset. Pass "
-            "--doclaynet-annotations / --doclaynet-images (and the "
-            "same for any other sources you have)."
+            "Phase 2 requires at least one dataset. Pass --doclaynet-root / "
+            "--publaynet-root / --tablebank-root / --iiit-ar-root (or the "
+            "legacy --*-annotations + --*-images COCO pair)."
         )
 
     cfg = phase2_config()
     default_weights = cfg.source_weights
-    actual_weights = {
-        name: default_weights.get(name, 1.0) for name in sources
-    }
+    actual_weights = {name: default_weights.get(name, 1.0) for name in sources}
     mixture = MultiSourceDataset(sources=sources, weights=actual_weights)
     return mixture, list(sources.keys())
 
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="DocDet Phase 2: multi-dataset real-document fine-tuning.",
     )
 
+    # Native-format roots (preferred): point at the dataset cache directory.
+    parser.add_argument("--doclaynet-root", type=Path, default=None,
+                        help="Root containing DocLayNet train parquet shards.")
+    parser.add_argument("--publaynet-root", type=Path, default=None,
+                        help="Root containing PubLayNet train parquet shards.")
+    parser.add_argument("--tablebank-root", type=Path, default=None,
+                        help="Root containing TableBank-Detection train parquets.")
+    parser.add_argument("--iiit-ar-root", type=Path, default=None,
+                        help="Root of the unpacked Kaggle IIIT-AR-13K dataset (VOC XML).")
+
+    # Legacy COCO-JSON fallback (still honoured if both flags are passed).
     parser.add_argument("--doclaynet-annotations", type=Path, default=None)
     parser.add_argument("--doclaynet-images", type=Path, default=None)
     parser.add_argument("--publaynet-annotations", type=Path, default=None)
     parser.add_argument("--publaynet-images", type=Path, default=None)
-    parser.add_argument("--docbank-annotations", type=Path, default=None)
-    parser.add_argument("--docbank-images", type=Path, default=None)
     parser.add_argument("--tablebank-annotations", type=Path, default=None)
     parser.add_argument("--tablebank-images", type=Path, default=None)
     parser.add_argument("--iiit-ar-annotations", type=Path, default=None)

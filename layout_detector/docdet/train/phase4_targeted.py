@@ -31,34 +31,16 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader
 
-from ..data.coco_source import CocoSource, docdet_collate
+from ..data.coco_source import docdet_collate
 from ..data.label_map import DOCDET_CLASS_NAMES, NUM_DOCDET_CLASSES, canonical_id
 from ..data.weighted_sampler import MultiSourceDataset
 from ..model.loss import DocDetLoss
 from ..model.model import DocDet
 from .config import phase4_config
+from .phase2_real import _build_iiit_ar_source, _build_parquet_source
 from .trainer import Trainer
 
 logger = logging.getLogger(__name__)
-
-
-def _maybe_source(
-    name: str,
-    annotation_file: Optional[Path],
-    image_root: Optional[Path],
-) -> Optional[CocoSource]:
-    """Return a CocoSource if both paths exist, else None."""
-    if annotation_file is None or image_root is None:
-        return None
-    if not Path(annotation_file).exists() or not Path(image_root).exists():
-        logger.warning("Skipping %s: paths not found", name)
-        return None
-    return CocoSource(
-        annotation_file=annotation_file,
-        image_root=image_root,
-        source_name=name,
-        train=True,
-    )
 
 
 def _build_class_weights(
@@ -93,26 +75,28 @@ def _build_class_weights(
 
 def _build_mixture(args) -> Tuple[MultiSourceDataset, List[str]]:
     """Assemble whatever subset of the Phase 2 mixture is available."""
-    sources: Dict[str, CocoSource] = {}
-    candidates = {
-        "doclaynet": (args.doclaynet_annotations, args.doclaynet_images),
-        "publaynet": (args.publaynet_annotations, args.publaynet_images),
-        "docbank": (args.docbank_annotations, args.docbank_images),
-        "tablebank": (args.tablebank_annotations, args.tablebank_images),
-        "iiit_ar": (args.iiit_ar_annotations, args.iiit_ar_images),
-    }
-    for name, (ann, imgs) in candidates.items():
-        src = _maybe_source(name, ann, imgs)
-        if src is not None:
-            sources[name] = src
+    sources: Dict[str, object] = {}
+
+    for name, root, ann, imgs in [
+        ("doclaynet", args.doclaynet_root, args.doclaynet_annotations, args.doclaynet_images),
+        ("publaynet", args.publaynet_root, args.publaynet_annotations, args.publaynet_images),
+        ("tablebank", args.tablebank_root, args.tablebank_annotations, args.tablebank_images),
+    ]:
+        ds = _build_parquet_source(name, root, ann, imgs, train=True)
+        if ds is not None:
+            sources[name] = ds
+
+    iiit = _build_iiit_ar_source(
+        args.iiit_ar_root, args.iiit_ar_annotations, args.iiit_ar_images, train=True,
+    )
+    if iiit is not None:
+        sources["iiit_ar"] = iiit
 
     if not sources:
         raise RuntimeError(
             "Phase 4 requires at least one dataset; see Phase 2 flags."
         )
 
-    # Use the Phase 2 weights by default unless the user overrides
-    # by repeating --source-weight NAME FACTOR.
     from .config import phase2_config
     default_weights = phase2_config().source_weights
     actual_weights = {n: default_weights.get(n, 1.0) for n in sources}
@@ -124,12 +108,17 @@ def main() -> None:
         description="DocDet Phase 4: conditional targeted fine-tune."
     )
 
+    # Native-format roots (preferred).
+    parser.add_argument("--doclaynet-root", type=Path, default=None)
+    parser.add_argument("--publaynet-root", type=Path, default=None)
+    parser.add_argument("--tablebank-root", type=Path, default=None)
+    parser.add_argument("--iiit-ar-root", type=Path, default=None)
+
+    # Legacy COCO-JSON fallback.
     parser.add_argument("--doclaynet-annotations", type=Path, default=None)
     parser.add_argument("--doclaynet-images", type=Path, default=None)
     parser.add_argument("--publaynet-annotations", type=Path, default=None)
     parser.add_argument("--publaynet-images", type=Path, default=None)
-    parser.add_argument("--docbank-annotations", type=Path, default=None)
-    parser.add_argument("--docbank-images", type=Path, default=None)
     parser.add_argument("--tablebank-annotations", type=Path, default=None)
     parser.add_argument("--tablebank-images", type=Path, default=None)
     parser.add_argument("--iiit-ar-annotations", type=Path, default=None)

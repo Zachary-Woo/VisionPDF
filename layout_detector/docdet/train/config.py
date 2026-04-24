@@ -88,7 +88,6 @@ def phase2_config() -> TrainerConfig:
         source_weights={
             "doclaynet": 3.0,
             "publaynet": 1.0,
-            "docbank": 0.5,
             "tablebank": 2.0,
             "iiit_ar": 4.0,
         },
