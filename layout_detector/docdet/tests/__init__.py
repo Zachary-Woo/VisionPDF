@@ -1,1 +1,0 @@
-"""DocDet unit tests (pytest)."""

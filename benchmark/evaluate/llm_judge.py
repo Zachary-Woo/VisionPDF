@@ -1,10 +1,11 @@
 import os
 import json
+import time
 import random
 import shutil
 import argparse
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import requests
 from dotenv import load_dotenv
 
@@ -284,10 +285,16 @@ Our approach outperforms the baseline while reducing latency.
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
-            json=payload
+            json=payload,
+            timeout=120,
         )
 
         if response.status_code != 200:
+            if response.status_code in {408, 409, 429, 500, 502, 503, 504} and attempt < MAX_RETRIES:
+                wait_s = 2 ** attempt
+                print(f"    [Retry {attempt + 1}/{MAX_RETRIES}] OpenRouter {response.status_code}, waiting {wait_s}s...")
+                time.sleep(wait_s)
+                continue
             raise Exception(f"OpenRouter API Error: {response.status_code} - {response.text}")
 
         data = response.json()
@@ -356,7 +363,11 @@ def run_llm_eval(
     num_samples: int = 10,
     seed: int = 42,
     review: bool = False,
-    lang: str = None
+    lang: str = None,
+    page_ids: Optional[List[str]] = None,
+    sample_out: Optional[Path] = None,
+    output_suffix: Optional[str] = None,
+    dry_run: bool = False,
 ):
     print(f"Loading ground truth from {gt_json}...")
     gt_pages = load_ground_truth(gt_json)
@@ -381,18 +392,46 @@ def run_llm_eval(
 
     print(f"Found {len(valid_files)} valid pages for {method_name}.")
     
-    # Sample to save API costs
-    random.seed(seed)
-    if len(valid_files) > num_samples:
-        sample_files = random.sample(valid_files, num_samples)
-        print(f"Sampling {num_samples} pages for LLM evaluation...")
+    if page_ids:
+        by_stem = {f.stem: f for f in valid_files}
+        missing = [pid for pid in page_ids if pid not in by_stem]
+        sample_files = [by_stem[pid] for pid in page_ids if pid in by_stem]
+        print(f"Using explicit page-id list: {len(sample_files)} found, {len(missing)} missing for {method_name}.")
+        if missing:
+            print("Missing page ids:")
+            for pid in missing[:20]:
+                print(f"  - {pid}")
+            if len(missing) > 20:
+                print(f"  ... and {len(missing) - 20} more")
+        if not sample_files:
+            print("No requested page IDs were available for this method.")
+            return
+    elif len(valid_files) > num_samples:
+        rng = random.Random(seed)
+        sample_files = rng.sample(valid_files, num_samples)
+        print(f"Sampling {num_samples} pages for LLM evaluation with seed {seed}...")
     else:
         sample_files = valid_files
         print(f"Evaluating all {len(valid_files)} pages...")
 
+    sample_ids = [f.stem for f in sample_files]
+    if sample_out:
+        sample_out.parent.mkdir(parents=True, exist_ok=True)
+        sample_out.write_text("\n".join(sample_ids) + "\n", encoding="utf-8")
+        print(f"Sample page IDs saved to {sample_out}")
+
+    if dry_run:
+        print("Dry run selected these page IDs:")
+        for pid in sample_ids:
+            print(f"  {pid}")
+        return
+
     review_dir = None
+    suffix = output_suffix or ""
+    if not suffix and lang:
+        suffix = f"_{lang}"
     if review:
-        review_dir = results_dir / f"llm_review_{method_name}"
+        review_dir = results_dir / f"llm_review_{method_name}{suffix}"
         review_dir.mkdir(parents=True, exist_ok=True)
         print(f"Review artifacts will be saved to {review_dir}")
 
@@ -483,10 +522,14 @@ def run_llm_eval(
     print("="*65)
 
     # Save results
-    out_file = results_dir / f"llm_eval_{method_name}.json"
+    out_file = results_dir / f"llm_eval_{method_name}{suffix}.json"
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump({
             "method": method_name,
+            "judge_model": MODEL,
+            "seed": seed,
+            "language_filter": lang,
+            "sample_page_ids": sample_ids,
             "samples": len(results),
             "averages": {
                 "gt": {
@@ -513,18 +556,39 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate extraction quality using an LLM-as-a-judge via OpenRouter.")
     parser.add_argument("method_name", type=str, help="Name of the method directory in results/ (e.g., tier2_yolo)")
     parser.add_argument("--samples", type=int, default=10, help="Number of pages to sample for evaluation")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed used when sampling pages")
     parser.add_argument("--results-dir", type=Path, default=OUTPUT_DIR, help="Directory containing per-method output folders")
     parser.add_argument("--gt-json", type=Path, default=OMNIDOCBENCH_JSON, help="Path to OmniDocBench.json ground truth")
     parser.add_argument("--review", action="store_true", help="Save review artifacts (page image, GT, extraction, scores) per page into results/llm_review_{method}/")
     parser.add_argument("--lang", type=str, default=None, choices=["english", "simplified_chinese", "en_ch_mixed"], help="Only evaluate pages in this language")
+    parser.add_argument("--page-ids", type=str, default=None, help="Comma-separated explicit page IDs to evaluate")
+    parser.add_argument("--page-id-file", type=Path, default=None, help="Text file with one explicit page ID per line")
+    parser.add_argument("--sample-out", type=Path, default=None, help="Write selected page IDs to this file for reuse across methods")
+    parser.add_argument("--output-suffix", type=str, default=None, help="Suffix appended to llm_eval/review output names, e.g. _shared20")
+    parser.add_argument("--dry-run", action="store_true", help="Select and print pages without calling the LLM API")
 
     args = parser.parse_args()
+
+    explicit_page_ids: List[str] = []
+    if args.page_ids:
+        explicit_page_ids.extend(pid.strip() for pid in args.page_ids.split(",") if pid.strip())
+    if args.page_id_file:
+        explicit_page_ids.extend(
+            line.strip()
+            for line in args.page_id_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        )
 
     run_llm_eval(
         results_dir=args.results_dir,
         gt_json=args.gt_json,
         method_name=args.method_name,
         num_samples=args.samples,
+        seed=args.seed,
         review=args.review,
-        lang=args.lang
+        lang=args.lang,
+        page_ids=explicit_page_ids or None,
+        sample_out=args.sample_out,
+        output_suffix=args.output_suffix,
+        dry_run=args.dry_run,
     )
