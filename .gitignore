@@ -37,6 +37,8 @@ docling_experiments/test*
 benchmark/evaluate/build_comparison.py
 result.png
 torch_import_log.txt
+notes*
 
 # Temporararialy hidden files
 layout_detector_v2/
+docdet*
